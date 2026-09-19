@@ -1,18 +1,18 @@
 [submodule "client-android"]
 	path = client-android
-	url = https://review.jami.net/jami-client-android
+	url = https://github.com/savoirfairelinux/jami-client-android.git
 [submodule "daemon"]
 	path = daemon
-	url = https://review.jami.net/jami-daemon
+	url = https://github.com/savoirfairelinux/jami-daemon.git
 [submodule "client-macosx"]
 	path = client-macosx
 	url = https://review.jami.net/jami-client-macos
 [submodule "client-ios"]
 	path = client-ios
-	url = https://review.jami.net/jami-client-ios
+	url = https://github.com/savoirfairelinux/jami-client-ios.git
 [submodule "client-qt"]
 	path = client-qt
-	url = https://review.jami.net/jami-client-qt
+	url = https://github.com/savoirfairelinux/jami-client-qt.git
 [submodule "plugins"]
 	path = plugins
 	url = https://review.jami.net/jami-plugins
