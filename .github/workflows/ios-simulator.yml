@@ -15,7 +15,7 @@ permissions:
 jobs:
   build:
     name: Build iOS simulator
-    runs-on: macos-13
+    runs-on: macos-15-intel
     timeout-minutes: 90
     steps:
       - name: Check out source and pinned submodules
