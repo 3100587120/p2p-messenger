@@ -23,17 +23,22 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
-
-      - name: Install native build tools
+      - name: Install documented build dependencies
         run: |
-          brew install autoconf automake libtool coreutils yasm
-          echo "$(brew --prefix coreutils)/libexec/gnubin" >> "$GITHUB_PATH"
+          brew install carthage node autoconf automake libtool pkg-config yasm
+          automake_bin="$(brew --prefix automake)/bin"
+          if ! command -v aclocal >/dev/null; then
+            ln -s "$automake_bin/$(basename "$(find "$automake_bin" -name 'aclocal-*' -print -quit)")" \
+              "$(brew --prefix)/bin/aclocal"
+          fi
 
       - name: Build Jami core for the simulator
         working-directory: client-ios
-        run: ./compile-ios.sh --platform=iPhoneSimulator
+        run: ./compile-ios.sh --platform=iPhoneSimulator --arch=x86_64
+
+      - name: Fetch iOS app dependencies
+        working-directory: client-ios/Ring
+        run: ./fetch-dependencies.sh
 
       - name: Build the iOS client without signing
         working-directory: client-ios/Ring
