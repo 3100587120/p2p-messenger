@@ -3,13 +3,13 @@
 	url = https://github.com/savoirfairelinux/jami-client-android.git
 [submodule "daemon"]
 	path = daemon
-	url = https://github.com/savoirfairelinux/jami-daemon.git
+	url = https://github.com/3100587120/p2p-messenger-daemon.git
 [submodule "client-macosx"]
 	path = client-macosx
 	url = https://review.jami.net/jami-client-macos
 [submodule "client-ios"]
 	path = client-ios
-	url = https://github.com/savoirfairelinux/jami-client-ios.git
+	url = https://github.com/3100587120/p2p-messenger-ios.git
 [submodule "client-qt"]
 	path = client-qt
 	url = https://github.com/savoirfairelinux/jami-client-qt.git
