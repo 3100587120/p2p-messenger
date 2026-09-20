@@ -40,6 +40,28 @@ ApplicationWindow {
         }
     }
 
+    Dialog {
+        id: createGroup
+        title: "新建群聊"
+        modal: true
+        anchors.centerIn: parent
+        width: Math.min(420, window.width - 40)
+        standardButtons: Dialog.Cancel
+        background: Rectangle { color: window.panel; radius: 16 }
+        contentItem: ColumnLayout {
+            spacing: 14
+            Label { text: "输入群名称，并粘贴成员已验证的邀请码（每行一个）。"; wrapMode: Text.Wrap; color: window.subdued; Layout.fillWidth: true }
+            TextField { id: groupName; placeholderText: "群名称"; Layout.fillWidth: true }
+            TextArea { id: groupMembers; placeholderText: "成员邀请码"; wrapMode: Text.Wrap; Layout.fillWidth: true; Layout.preferredHeight: 130 }
+            Button {
+                text: "创建加密群聊"
+                enabled: groupName.text.trim().length > 0
+                Layout.alignment: Qt.AlignRight
+                onClicked: { messenger.createGroup(groupName.text, groupMembers.text.split("\n")); createGroup.close() }
+            }
+        }
+    }
+
     FileDialog {
         id: filePicker
         title: "选择要发送的文件"
@@ -69,6 +91,7 @@ ApplicationWindow {
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#30415d" }
                 Label { text: messenger.networkStatus; color: window.subdued; font.pixelSize: 12; wrapMode: Text.Wrap; Layout.fillWidth: true }
                 Button { text: "+ 添加好友"; Layout.fillWidth: true; onClicked: addFriend.open() }
+                Button { text: "新建群聊"; Layout.fillWidth: true; onClicked: createGroup.open() }
                 Label { text: "消息"; color: window.subdued; font.bold: true; font.pixelSize: 12 }
                 ListView {
                     Layout.fillWidth: true

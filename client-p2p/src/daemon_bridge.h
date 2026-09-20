@@ -13,6 +13,7 @@ public:
 
     QString createLocalIdentity(const QString& displayName);
     bool addVerifiedContact(const QString& accountId, const QString& contactUri);
+    QString createEmptyConversation(const QString& accountId);
     QString createConversation(const QString& accountId, const QString& contactUri);
     bool addGroupMember(const QString& accountId, const QString& conversationId, const QString& contactUri);
     bool sendText(const QString& accountId, const QString& conversationId, const QString& text);

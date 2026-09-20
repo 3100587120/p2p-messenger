@@ -57,14 +57,27 @@ bool DaemonBridge::addVerifiedContact(const QString& accountId, const QString& c
 QString DaemonBridge::createConversation(const QString& accountId, const QString& contactUri)
 {
 #ifdef P2P_MESSENGER_WITH_DAEMON
-    if (!started_)
+    const auto conversation = createEmptyConversation(accountId);
+    if (conversation.isEmpty())
         return {};
-    const auto conversation = DRing::startConversation(accountId.toStdString());
-    DRing::addConversationMember(accountId.toStdString(), conversation, contactUri.toStdString());
-    return QString::fromStdString(conversation);
+    DRing::addConversationMember(accountId.toStdString(), conversation.toStdString(), contactUri.toStdString());
+    return conversation;
 #else
     Q_UNUSED(accountId)
     Q_UNUSED(contactUri)
+    return {};
+#endif
+}
+
+QString DaemonBridge::createEmptyConversation(const QString& accountId)
+{
+#ifdef P2P_MESSENGER_WITH_DAEMON
+    if (!started_ || accountId.isEmpty())
+        return {};
+    const auto conversation = DRing::startConversation(accountId.toStdString());
+    return QString::fromStdString(conversation);
+#else
+    Q_UNUSED(accountId)
     return {};
 #endif
 }

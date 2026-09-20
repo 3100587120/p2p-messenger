@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QObject>
+#include <QStringList>
 #include <QVariantList>
 
 #include "daemon_bridge.h"
@@ -25,6 +26,7 @@ public:
 
     Q_INVOKABLE void selectContact(const QString& contactId);
     Q_INVOKABLE void addContact(const QString& name, const QString& invite);
+    Q_INVOKABLE void createGroup(const QString& name, const QStringList& memberUris);
     Q_INVOKABLE void sendMessage(const QString& body);
     Q_INVOKABLE void queueFile(const QString& path);
 

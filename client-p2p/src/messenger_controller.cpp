@@ -64,6 +64,29 @@ void MessengerController::addContact(const QString& name, const QString& invite)
     selectContact(id);
 }
 
+void MessengerController::createGroup(const QString& name, const QStringList& memberUris)
+{
+    const auto groupName = name.trimmed();
+    if (groupName.isEmpty())
+        return;
+    const auto id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    const auto conversationId = !accountId_.isEmpty() ? daemon_.createEmptyConversation(accountId_) : QString {};
+    if (!accountId_.isEmpty() && conversationId.isEmpty())
+        return;
+    for (const auto& uri : memberUris) {
+        const auto member = uri.trimmed();
+        if (!member.isEmpty() && !accountId_.isEmpty())
+            daemon_.addGroupMember(accountId_, conversationId, member);
+    }
+    auto entry = contact(id, groupName, tr("群聊"));
+    entry.insert(QStringLiteral("initial"), tr("群"));
+    entry.insert(QStringLiteral("conversationId"), conversationId);
+    entry.insert(QStringLiteral("group"), true);
+    contacts_.append(entry);
+    emit contactsChanged();
+    selectContact(id);
+}
+
 void MessengerController::sendMessage(const QString& body)
 {
     const auto text = body.trimmed();
