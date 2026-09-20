@@ -17,30 +17,37 @@ packaging are original to P2P Messenger.
 - Files transfer directly between peers. The client must make connection,
   progress, failure, and integrity states clear.
 
-## No-third-party-network policy
+## Network and infrastructure policy
 
 The shipped application must never initiate a connection to a third-party
 service. This is a product invariant, not an optional privacy setting.
 
 - Disable public DHT bootstrap and proxy lists, including all `*.jami.net`
-  defaults.
-- Disable TURN, STUN, relay fallback, push notifications, JamiNS/name lookup,
-  telemetry, crash reporting, remote configuration, and automatic updates.
+  defaults, public TURN/STUN services, JamiNS/name lookup, telemetry, crash
+  reporting, remote configuration, and automatic updates.
 - Never include remote images, web views, CDN assets, or analytics SDKs.
-- Peer discovery is limited to local-network discovery and an explicit,
-  user-approved peer invite (QR code or manually exchanged invite). The invite
-  contains the peer address and public identity; it is not resolved through a
-  directory or rendezvous service.
-- A direct connection that cannot be established must fail locally and explain
-  that no relay is permitted. It must not silently fall back to a server.
+- The product may connect only to a first-party infrastructure endpoint that
+  its operator deploys and explicitly configures. It is never silently
+  substituted with an upstream or third-party endpoint.
+- Peer discovery supports local-network discovery, QR/manual invites, and a
+  first-party rendezvous service. Friend requests are authenticated with each
+  device identity before a contact is created.
+- Conversations and files try direct end-to-end peer connections first. If NAT
+  traversal prevents that connection, the client may use a first-party,
+  short-lived encrypted relay. The relay stores no chat history or file body,
+  and receives only ciphertext and routing metadata needed for delivery.
+- Mobile push is optional and only permitted when delivered by infrastructure
+  operated for this product; it must contain no message text, file contents, or
+  contact data. The first release will work without push while the app is open.
 
 ## Product surface
 
 - Ship an original P2P Messenger interface rather than a rebranded upstream
   client. The interface is shared in behavior across Windows, Android, and
   iOS, with native platform bridges only for the embedded engine.
-- The first release includes local identity creation, QR/manual peer invite,
-  private chat, group chat, local encrypted history, and direct file transfer.
+- The first release includes local identity creation, QR/manual and
+  first-party-rendezvous friend invitations, private chat, group chat, local
+  encrypted history, and direct or relayed encrypted file transfer.
 - The app is free to use and has no paid service, account, advertising, or
   cloud-storage dependency.
 
@@ -48,9 +55,10 @@ service. This is a product invariant, not an optional privacy setting.
 
 For Windows, Android, and iOS verify: account creation, contact invitation,
 one-to-one messages, group messages, linked-device sync, persisted local
-history after restart, a direct file transfer between two devices, and a
-network audit proving no connection is attempted except to the user-approved
-peer or a local-network peer.
+history after restart, a direct and relayed file transfer between two devices,
+and a network audit proving no connection is attempted except to the
+user-approved peer, a local-network peer, or the explicitly configured
+first-party endpoint.
 
 ## License
 
