@@ -18,6 +18,11 @@ MessengerController::MessengerController(QObject* parent)
     : QObject(parent)
     , networkStatus_(tr("仅本地模式 — 尚未配置自建服务"))
 {
+    if (daemon_.start()) {
+        accountId_ = daemon_.createLocalIdentity(tr("我的设备"));
+        if (!accountId_.isEmpty())
+            networkStatus_ = tr("私有通信内核已启动 — 等待自建服务配置");
+    }
     contacts_.append(contact(QStringLiteral("welcome"), tr("开始使用"), tr("本设备")));
     activeContactId_ = QStringLiteral("welcome");
     appendMessage(tr("欢迎使用 P2P Messenger。创建或扫描好友邀请码后，即可建立端到端加密连接。"), false);
@@ -47,22 +52,52 @@ void MessengerController::addContact(const QString& name, const QString& invite)
     if (trimmedName.isEmpty() || invite.trimmed().isEmpty())
         return;
     const auto id = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    contacts_.append(contact(id, trimmedName, tr("等待验证")));
+    const auto verified = accountId_.isEmpty()
+        || daemon_.addVerifiedContact(accountId_, invite.trimmed());
+    const auto conversationId = verified && !accountId_.isEmpty()
+        ? daemon_.createConversation(accountId_, invite.trimmed()) : QString {};
+    auto entry = contact(id, trimmedName, verified ? tr("等待验证") : tr("需要通信内核"));
+    entry.insert(QStringLiteral("uri"), invite.trimmed());
+    entry.insert(QStringLiteral("conversationId"), conversationId);
+    contacts_.append(entry);
     emit contactsChanged();
     selectContact(id);
 }
 
 void MessengerController::sendMessage(const QString& body)
 {
-    if (!body.trimmed().isEmpty())
-        appendMessage(body.trimmed(), true);
+    const auto text = body.trimmed();
+    if (text.isEmpty())
+        return;
+    for (const auto& item : contacts_) {
+        const auto current = item.toMap();
+        if (current.value(QStringLiteral("id")).toString() != activeContactId_)
+            continue;
+        const auto conversationId = current.value(QStringLiteral("conversationId")).toString();
+        if (!accountId_.isEmpty() && !conversationId.isEmpty()
+            && !daemon_.sendText(accountId_, conversationId, text))
+            return;
+        appendMessage(text, true);
+        return;
+    }
 }
 
 void MessengerController::queueFile(const QString& path)
 {
-    if (!path.isEmpty())
+    if (path.isEmpty())
+        return;
+    for (const auto& item : contacts_) {
+        const auto current = item.toMap();
+        if (current.value(QStringLiteral("id")).toString() != activeContactId_)
+            continue;
+        const auto conversationId = current.value(QStringLiteral("conversationId")).toString();
+        if (!accountId_.isEmpty() && !conversationId.isEmpty()
+            && !daemon_.sendFile(accountId_, conversationId, path))
+            return;
         appendMessage(tr("文件：%1（等待端到端传输）").arg(QFileInfo(path).fileName()), true,
                       QStringLiteral("file"));
+        return;
+    }
 }
 
 void MessengerController::appendMessage(const QString& body, bool outgoing, const QString& kind)

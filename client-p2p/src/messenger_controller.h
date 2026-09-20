@@ -3,6 +3,8 @@
 #include <QObject>
 #include <QVariantList>
 
+#include "daemon_bridge.h"
+
 class MessengerController final : public QObject
 {
     Q_OBJECT
@@ -37,6 +39,8 @@ private:
     QVariantList messages_;
     QString activeContactId_;
     QString networkStatus_;
+    QString accountId_;
+    DaemonBridge daemon_;
 
     void appendMessage(const QString& body, bool outgoing, const QString& kind = QStringLiteral("text"));
     QString contactName(const QString& id) const;

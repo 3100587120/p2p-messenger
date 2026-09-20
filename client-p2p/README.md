@@ -5,10 +5,11 @@ It contains no upstream Jami visual assets, web content, analytics, or remote
 configuration. The initial UI provides the shared interaction model for local
 identity, verified friend invitations, conversations, and file-transfer state.
 
-The next integration layer binds `MessengerController` to the private daemon
-configuration: it creates a local identity, validates an invite, persists the
-encrypted local history, and uses only explicitly configured first-party
-rendezvous/TURN endpoints when direct delivery is unavailable.
+`DaemonBridge` is the only integration boundary for the private daemon. It
+creates a local identity, adds a verified contact, creates private or group
+conversations, sends messages, and starts file transfers. It is compiled only
+when given the private daemon headers and library, so an accidental upstream
+library or network configuration cannot silently enter a release build.
 
 ## Build prerequisites
 
