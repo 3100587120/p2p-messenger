@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS Quick)
-if(NOT WIN32)
+if(NOT WIN32 AND NOT ANDROID)
     find_package(OpenSSL REQUIRED)
 endif()
 
@@ -36,7 +36,7 @@ qt_add_qml_module(P2PMessenger
 
 target_link_libraries(P2PMessenger PRIVATE Qt6::Quick)
 
-if(NOT WIN32)
+if(NOT WIN32 AND NOT ANDROID)
     target_link_libraries(P2PMessenger PRIVATE OpenSSL::Crypto)
 endif()
 
@@ -72,4 +72,5 @@ include(GNUInstallDirs)
 install(TARGETS P2PMessenger
     BUNDLE DESTINATION .
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )

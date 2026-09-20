@@ -10,6 +10,8 @@ import java.security.KeyStore;
 import java.security.PublicKey;
 import java.security.SecureRandom;
 import javax.crypto.Cipher;
+import javax.crypto.spec.GCMParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
 
 /** Keeps the vault key device-local: only a Keystore private key can unwrap it. */
 public final class VaultKeyStore {
@@ -44,5 +46,17 @@ public final class VaultKeyStore {
         if (!preferences.edit().putString(name, Base64.encodeToString(cipher.doFinal(key), Base64.NO_WRAP)).commit())
             throw new IllegalStateException("Cannot save wrapped vault key");
         return key;
+    }
+
+    public static byte[] encrypt(byte[] key, byte[] nonce, byte[] input) throws Exception {
+        Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+        cipher.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(key, "AES"), new GCMParameterSpec(128, nonce));
+        return cipher.doFinal(input);
+    }
+
+    public static byte[] decrypt(byte[] key, byte[] nonce, byte[] input) throws Exception {
+        Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+        cipher.init(Cipher.DECRYPT_MODE, new SecretKeySpec(key, "AES"), new GCMParameterSpec(128, nonce));
+        return cipher.doFinal(input);
     }
 }

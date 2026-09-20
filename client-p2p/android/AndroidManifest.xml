@@ -1,3 +1,6 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="io.p2pmessenger.app"
+    android:versionCode="1"
+    android:versionName="0.1.0">
     <application android:label="P2P Messenger" android:allowBackup="false" android:usesCleartextTraffic="false" />
 </manifest>

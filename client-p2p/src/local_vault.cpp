@@ -5,14 +5,15 @@
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QRandomGenerator>
 #include <QSaveFile>
 #include <QStandardPaths>
 
-#ifndef Q_OS_WIN
+#ifdef Q_OS_WIN
+#include <bcrypt.h>
+#elif !defined(Q_OS_ANDROID)
 #include <openssl/evp.h>
 #include <openssl/rand.h>
-#else
-#include <bcrypt.h>
 #endif
 
 #ifdef Q_OS_WIN
@@ -22,9 +23,9 @@
 #endif
 
 #ifdef Q_OS_ANDROID
+#include <QCoreApplication>
 #include <QJniEnvironment>
 #include <QJniObject>
-#include <QNativeInterface>
 #endif
 
 #ifdef Q_OS_IOS
@@ -95,17 +96,37 @@ QByteArray unprotectForCurrentUser(const QByteArray& protectedKey)
 QByteArray loadAndroidKey()
 {
     auto context = QNativeInterface::QAndroidApplication::context();
-    auto result = QJniObject::callStaticObjectMethod<jbyteArray>(
-        "org/p2pmessenger/VaultKeyStore", "loadOrCreate",
-        "(Landroid/content/Context;Ljava/lang/String;)[B", context.object<jobject>(),
-        QJniObject::fromString(QStringLiteral("master-key")).object<jstring>());
-    if (!result.isValid()) return {};
     QJniEnvironment environment;
-    const auto array = result.object<jbyteArray>();
+    auto clazz = environment->FindClass("org/p2pmessenger/VaultKeyStore");
+    auto method = environment->GetStaticMethodID(clazz, "loadOrCreate", "(Landroid/content/Context;Ljava/lang/String;)[B");
+    auto name = QJniObject::fromString(QStringLiteral("master-key"));
+    auto array = static_cast<jbyteArray>(environment->CallStaticObjectMethod(clazz, method, context.object<jobject>(), name.object<jstring>()));
+    if (!array || environment.checkAndClearExceptions()) return {};
     const auto size = environment->GetArrayLength(array);
     QByteArray key(size, Qt::Uninitialized);
     environment->GetByteArrayRegion(array, 0, size, reinterpret_cast<jbyte*>(key.data()));
     return environment.checkAndClearExceptions() ? QByteArray {} : key;
+}
+
+QByteArray androidCrypt(const char* method, const QByteArray& key, const QByteArray& nonce,
+                        const QByteArray& input)
+{
+    QJniEnvironment environment;
+    auto makeArray = [&environment](const QByteArray& bytes) {
+        auto array = environment->NewByteArray(bytes.size());
+        environment->SetByteArrayRegion(array, 0, bytes.size(), reinterpret_cast<const jbyte*>(bytes.constData()));
+        return array;
+    };
+    auto keyArray = makeArray(key), nonceArray = makeArray(nonce), inputArray = makeArray(input);
+    auto clazz = environment->FindClass("org/p2pmessenger/VaultKeyStore");
+    auto methodId = environment->GetStaticMethodID(clazz, method, "([B[B[B)[B");
+    auto result = static_cast<jbyteArray>(environment->CallStaticObjectMethod(clazz, methodId, keyArray, nonceArray, inputArray));
+    environment->DeleteLocalRef(keyArray); environment->DeleteLocalRef(nonceArray); environment->DeleteLocalRef(inputArray);
+    if (!result || environment.checkAndClearExceptions()) return {};
+    const auto array = result; const auto size = environment->GetArrayLength(array);
+    QByteArray bytes(size, Qt::Uninitialized);
+    environment->GetByteArrayRegion(array, 0, size, reinterpret_cast<jbyte*>(bytes.data()));
+    return environment.checkAndClearExceptions() ? QByteArray {} : bytes;
 }
 #endif
 }
@@ -133,7 +154,7 @@ bool LocalVault::initialise()
             error_ = QStringLiteral("无法读取本地密钥");
             return false;
         }
-#ifdef Q_OS_WIN
+#if defined(Q_OS_WIN)
         masterKey_ = unprotectForCurrentUser(keyFile.readAll());
 #elif defined(Q_OS_ANDROID)
         masterKey_ = loadAndroidKey();
@@ -152,12 +173,14 @@ bool LocalVault::initialise()
     QByteArray key(keySize, Qt::Uninitialized);
 #ifdef Q_OS_WIN
     if (BCryptGenRandom(nullptr, reinterpret_cast<PUCHAR>(key.data()), key.size(), BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0) {
-#else
+        error_ = QStringLiteral("无法生成本地加密密钥"); return false;
+    }
+#elif !defined(Q_OS_ANDROID) && !defined(Q_OS_IOS)
     if (RAND_bytes(reinterpret_cast<unsigned char*>(key.data()), key.size()) != 1) {
-#endif
         error_ = QStringLiteral("无法生成本地加密密钥");
         return false;
     }
+#endif
 #ifdef Q_OS_WIN
     const auto protectedKey = protectForCurrentUser(key);
     if (protectedKey.isEmpty()) {
@@ -202,6 +225,12 @@ QByteArray LocalVault::encrypt(const QByteArray& plain) const
     if (BCryptGenRandom(nullptr, reinterpret_cast<PUCHAR>(nonce.data()), nonce.size(), BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0) return {};
     QByteArray tag; const auto cipher = cngCrypt(true, masterKey_, nonce, plain, &tag);
     return cipher.isEmpty() ? QByteArray {} : magic + nonce + tag + cipher;
+ #elif defined(Q_OS_ANDROID)
+    for (auto index = 0; index < nonce.size(); ++index)
+        nonce[index] = static_cast<char>(QRandomGenerator::system()->bounded(256));
+    const auto combined = androidCrypt("encrypt", masterKey_, nonce, plain);
+    if (combined.size() < tagSize) return {};
+    return magic + nonce + combined.right(tagSize) + combined.left(combined.size() - tagSize);
  #else
     if (RAND_bytes(reinterpret_cast<unsigned char*>(nonce.data()), nonce.size()) != 1) return {};
     EVP_CIPHER_CTX* context = EVP_CIPHER_CTX_new();
@@ -233,6 +262,8 @@ QByteArray LocalVault::decrypt(const QByteArray& encrypted) const
  #ifdef Q_OS_WIN
     auto localTag = tag; const auto plain = cngCrypt(false, masterKey_, nonce, cipher, &localTag);
     return plain;
+ #elif defined(Q_OS_ANDROID)
+    return androidCrypt("decrypt", masterKey_, nonce, cipher + tag);
  #else
     EVP_CIPHER_CTX* context = EVP_CIPHER_CTX_new();
     if (!context) return {};
