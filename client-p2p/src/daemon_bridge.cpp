@@ -1,6 +1,7 @@
 #include "daemon_bridge.h"
 
 #ifdef P2P_MESSENGER_WITH_DAEMON
+#include <QMetaObject>
 #include <jami/configurationmanager_interface.h>
 #include <jami/conversation_interface.h>
 #include <jami/datatransfer_interface.h>
@@ -12,7 +13,20 @@ bool DaemonBridge::start()
 #ifdef P2P_MESSENGER_WITH_DAEMON
     if (started_)
         return true;
-    started_ = DRing::init(static_cast<DRing::InitFlag>(0)) && DRing::start();
+    started_ = DRing::init(static_cast<DRing::InitFlag>(0));
+    if (started_) {
+        DRing::registerSignalHandlers({DRing::exportable_callback<DRing::ConversationSignal::MessageReceived>(
+            [this](const std::string&, const std::string& conversationId,
+                   std::map<std::string, std::string> message) {
+                const auto body = message.find("body");
+                if (body == message.end()) return;
+                QMetaObject::invokeMethod(this,
+                    [this, conversation = QString::fromStdString(conversationId),
+                     text = QString::fromStdString(body->second)] { emit incomingMessage(conversation, text); },
+                    Qt::QueuedConnection);
+            })});
+        started_ = DRing::start();
+    }
 #endif
     return started_;
 }
@@ -20,8 +34,10 @@ bool DaemonBridge::start()
 void DaemonBridge::stop()
 {
 #ifdef P2P_MESSENGER_WITH_DAEMON
-    if (started_)
+    if (started_) {
+        DRing::unregisterSignalHandlers();
         DRing::fini();
+    }
 #endif
     started_ = false;
 }

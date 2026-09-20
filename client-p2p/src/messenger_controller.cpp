@@ -7,6 +7,17 @@
 namespace {
 QVariantMap contact(const QString& id, const QString& name, const QString& status)
 {
+    connect(&daemon_, &DaemonBridge::incomingMessage, this,
+            [this](const QString& conversationId, const QString& body) {
+                for (const auto& item : contacts_) {
+                    if (item.toMap().value(QStringLiteral("conversationId")).toString() == conversationId) {
+                        if (activeContactId_ != item.toMap().value(QStringLiteral("id")).toString())
+                            return;
+                        appendMessage(body, false);
+                        return;
+                    }
+                }
+            });
     return {{QStringLiteral("id"), id},
             {QStringLiteral("name"), name},
             {QStringLiteral("initial"), name.left(1).toUpper()},
