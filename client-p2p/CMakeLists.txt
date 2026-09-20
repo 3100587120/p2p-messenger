@@ -21,6 +21,8 @@ qt_add_executable(P2PMessenger
     src/daemon_bridge.h
     src/local_vault.cpp
     src/local_vault.h
+    src/private_network_config.cpp
+    src/private_network_config.h
 )
 
 qt_add_qml_module(P2PMessenger
