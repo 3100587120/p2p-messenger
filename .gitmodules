@@ -1,6 +1,6 @@
 [submodule "client-android"]
 	path = client-android
-	url = https://github.com/savoirfairelinux/jami-client-android.git
+	url = https://github.com/3100587120/p2p-messenger-android.git
 [submodule "daemon"]
 	path = daemon
 	url = https://github.com/3100587120/p2p-messenger-daemon.git
