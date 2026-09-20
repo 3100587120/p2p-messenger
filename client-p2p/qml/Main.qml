@@ -53,7 +53,10 @@ ApplicationWindow {
             Label { text: "仅填写你自己部署的服务；留空表示仅本地/直连。"; color: window.subdued; wrapMode: Text.Wrap; Layout.fillWidth: true }
             TextField { id: rendezvousUrl; placeholderText: "wss://你的域名/v1/rendezvous"; Layout.fillWidth: true }
             TextField { id: turnHost; placeholderText: "自建 TURN 主机"; Layout.fillWidth: true }
-            RowLayout { TextField { id: turnPort; text: "3478"; Layout.fillWidth: true }; TextField { id: turnUser; placeholderText: "TURN 用户名"; Layout.fillWidth: true } }
+            RowLayout {
+                TextField { id: turnPort; text: "3478"; Layout.fillWidth: true }
+                TextField { id: turnUser; placeholderText: "TURN 用户名"; Layout.fillWidth: true }
+            }
             TextField { id: turnPassword; placeholderText: "TURN 密码"; echoMode: TextInput.Password; Layout.fillWidth: true }
             Button { text: "保存自建配置"; Layout.alignment: Qt.AlignRight; onClicked: { if (messenger.configureNetwork(rendezvousUrl.text, turnHost.text, Number(turnPort.text), turnUser.text, turnPassword.text)) networkSettings.close() } }
         }
@@ -126,7 +129,11 @@ ApplicationWindow {
                         contentItem: RowLayout {
                             spacing: 10
                             Rectangle { width: 38; height: 38; radius: 19; color: "#31516a"; Label { anchors.centerIn: parent; text: modelData.initial; color: "white"; font.bold: true } }
-                            ColumnLayout { spacing: 2; Layout.fillWidth: true; Label { text: modelData.name; color: "white"; font.bold: true }; Label { text: modelData.status; color: window.subdued; font.pixelSize: 12 } }
+                            ColumnLayout {
+                                spacing: 2; Layout.fillWidth: true
+                                Label { text: modelData.name; color: "white"; font.bold: true }
+                                Label { text: modelData.status; color: window.subdued; font.pixelSize: 12 }
+                            }
                         }
                     }
                 }
@@ -144,7 +151,11 @@ ApplicationWindow {
                 spacing: 16
                 RowLayout {
                     Layout.fillWidth: true
-                    ColumnLayout { spacing: 3; Label { text: messenger.activeContactName; color: "white"; font.pixelSize: 22; font.bold: true }; Label { text: "端到端加密 · 本地记录"; color: window.subdued; font.pixelSize: 12 } }
+                    ColumnLayout {
+                        spacing: 3
+                        Label { text: messenger.activeContactName; color: "white"; font.pixelSize: 22; font.bold: true }
+                        Label { text: "端到端加密 · 本地记录"; color: window.subdued; font.pixelSize: 12 }
+                    }
                     Label { text: "私有网络"; color: window.accent; font.bold: true }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#30415d" }

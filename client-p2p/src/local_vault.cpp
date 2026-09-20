@@ -8,8 +8,12 @@
 #include <QSaveFile>
 #include <QStandardPaths>
 
+#ifndef Q_OS_WIN
 #include <openssl/evp.h>
 #include <openssl/rand.h>
+#else
+#include <bcrypt.h>
+#endif
 
 #ifdef Q_OS_WIN
 #define WIN32_LEAN_AND_MEAN
@@ -32,6 +36,35 @@ constexpr auto keySize = 32;
 constexpr auto nonceSize = 12;
 constexpr auto tagSize = 16;
 const QByteArray magic("P2PV1");
+
+#ifdef Q_OS_WIN
+QByteArray cngCrypt(bool encrypting, const QByteArray& key, const QByteArray& nonce,
+                    const QByteArray& input, QByteArray* tag)
+{
+    BCRYPT_ALG_HANDLE algorithm = nullptr;
+    BCRYPT_KEY_HANDLE handle = nullptr;
+    if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_AES_ALGORITHM, nullptr, 0) != 0) return {};
+    const wchar_t mode[] = BCRYPT_CHAIN_MODE_GCM;
+    if (BCryptSetProperty(algorithm, BCRYPT_CHAINING_MODE, reinterpret_cast<PUCHAR>(const_cast<wchar_t*>(mode)), sizeof(mode), 0) != 0
+        || BCryptGenerateSymmetricKey(algorithm, &handle, nullptr, 0,
+                                       reinterpret_cast<PUCHAR>(const_cast<char*>(key.constData())), key.size(), 0) != 0) {
+        BCryptCloseAlgorithmProvider(algorithm, 0); return {};
+    }
+    BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO info;
+    BCRYPT_INIT_AUTH_MODE_INFO(info);
+    info.pbNonce = reinterpret_cast<PUCHAR>(const_cast<char*>(nonce.constData())); info.cbNonce = nonce.size();
+    QByteArray localTag(tagSize, Qt::Uninitialized); info.pbTag = reinterpret_cast<PUCHAR>(localTag.data()); info.cbTag = localTag.size();
+    QByteArray output(input.size(), Qt::Uninitialized); ULONG written = 0;
+    const auto status = encrypting
+        ? BCryptEncrypt(handle, reinterpret_cast<PUCHAR>(const_cast<char*>(input.constData())), input.size(), nullptr, nullptr, 0,
+                        reinterpret_cast<PUCHAR>(output.data()), output.size(), &written, 0, &info)
+        : BCryptDecrypt(handle, reinterpret_cast<PUCHAR>(const_cast<char*>(input.constData())), input.size(), nullptr, nullptr, 0,
+                        reinterpret_cast<PUCHAR>(output.data()), output.size(), &written, 0, &info);
+    BCryptDestroyKey(handle); BCryptCloseAlgorithmProvider(algorithm, 0);
+    if (status != 0) return {};
+    output.truncate(written); if (tag) *tag = localTag; return output;
+}
+#endif
 
 #ifdef Q_OS_WIN
 QByteArray protectForCurrentUser(const QByteArray& key)
@@ -117,7 +150,11 @@ bool LocalVault::initialise()
         return true;
     }
     QByteArray key(keySize, Qt::Uninitialized);
+#ifdef Q_OS_WIN
+    if (BCryptGenRandom(nullptr, reinterpret_cast<PUCHAR>(key.data()), key.size(), BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0) {
+#else
     if (RAND_bytes(reinterpret_cast<unsigned char*>(key.data()), key.size()) != 1) {
+#endif
         error_ = QStringLiteral("无法生成本地加密密钥");
         return false;
     }
@@ -161,6 +198,11 @@ QByteArray LocalVault::encrypt(const QByteArray& plain) const
 {
     if (!isReady()) return {};
     QByteArray nonce(nonceSize, Qt::Uninitialized);
+ #ifdef Q_OS_WIN
+    if (BCryptGenRandom(nullptr, reinterpret_cast<PUCHAR>(nonce.data()), nonce.size(), BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0) return {};
+    QByteArray tag; const auto cipher = cngCrypt(true, masterKey_, nonce, plain, &tag);
+    return cipher.isEmpty() ? QByteArray {} : magic + nonce + tag + cipher;
+ #else
     if (RAND_bytes(reinterpret_cast<unsigned char*>(nonce.data()), nonce.size()) != 1) return {};
     EVP_CIPHER_CTX* context = EVP_CIPHER_CTX_new();
     if (!context) return {};
@@ -178,6 +220,7 @@ QByteArray LocalVault::encrypt(const QByteArray& plain) const
     if (!ok) return {};
     cipher.truncate(written + finalWritten);
     return magic + nonce + tag + cipher;
+ #endif
 }
 
 QByteArray LocalVault::decrypt(const QByteArray& encrypted) const
@@ -187,6 +230,10 @@ QByteArray LocalVault::decrypt(const QByteArray& encrypted) const
     const auto nonce = encrypted.mid(magic.size(), nonceSize);
     const auto tag = encrypted.mid(magic.size() + nonceSize, tagSize);
     const auto cipher = encrypted.mid(magic.size() + nonceSize + tagSize);
+ #ifdef Q_OS_WIN
+    auto localTag = tag; const auto plain = cngCrypt(false, masterKey_, nonce, cipher, &localTag);
+    return plain;
+ #else
     EVP_CIPHER_CTX* context = EVP_CIPHER_CTX_new();
     if (!context) return {};
     QByteArray plain(cipher.size(), Qt::Uninitialized);
@@ -202,6 +249,7 @@ QByteArray LocalVault::decrypt(const QByteArray& encrypted) const
     if (!ok) return {};
     plain.truncate(written + finalWritten);
     return plain;
+ #endif
 }
 
 QVariantList LocalVault::loadConversation(const QString& conversationId) const

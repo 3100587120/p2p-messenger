@@ -5,7 +5,9 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS Quick)
-find_package(OpenSSL REQUIRED)
+if(NOT WIN32)
+    find_package(OpenSSL REQUIRED)
+endif()
 
 option(P2P_MESSENGER_WITH_DAEMON "Link the private Jami daemon engine" OFF)
 set(P2P_MESSENGER_DAEMON_INCLUDE_DIR "" CACHE PATH "Directory containing jami/jami.h")
@@ -32,10 +34,14 @@ qt_add_qml_module(P2PMessenger
         qml/Main.qml
 )
 
-target_link_libraries(P2PMessenger PRIVATE Qt6::Quick OpenSSL::Crypto)
+target_link_libraries(P2PMessenger PRIVATE Qt6::Quick)
+
+if(NOT WIN32)
+    target_link_libraries(P2PMessenger PRIVATE OpenSSL::Crypto)
+endif()
 
 if(WIN32)
-    target_link_libraries(P2PMessenger PRIVATE crypt32)
+    target_link_libraries(P2PMessenger PRIVATE crypt32 bcrypt)
 endif()
 
 if(APPLE)
