@@ -17,6 +17,16 @@
 #include <wincrypt.h>
 #endif
 
+#ifdef Q_OS_ANDROID
+#include <QJniEnvironment>
+#include <QJniObject>
+#include <QNativeInterface>
+#endif
+
+#ifdef Q_OS_IOS
+#include "local_vault_apple.h"
+#endif
+
 namespace {
 constexpr auto keySize = 32;
 constexpr auto nonceSize = 12;
@@ -47,6 +57,24 @@ QByteArray unprotectForCurrentUser(const QByteArray& protectedKey)
     return key;
 }
 #endif
+
+#ifdef Q_OS_ANDROID
+QByteArray loadAndroidKey()
+{
+    auto context = QNativeInterface::QAndroidApplication::context();
+    auto result = QJniObject::callStaticObjectMethod<jbyteArray>(
+        "org/p2pmessenger/VaultKeyStore", "loadOrCreate",
+        "(Landroid/content/Context;Ljava/lang/String;)[B", context.object<jobject>(),
+        QJniObject::fromString(QStringLiteral("master-key")).object<jstring>());
+    if (!result.isValid()) return {};
+    QJniEnvironment environment;
+    const auto array = result.object<jbyteArray>();
+    const auto size = environment->GetArrayLength(array);
+    QByteArray key(size, Qt::Uninitialized);
+    environment->GetByteArrayRegion(array, 0, size, reinterpret_cast<jbyte*>(key.data()));
+    return environment.checkAndClearExceptions() ? QByteArray {} : key;
+}
+#endif
 }
 
 LocalVault::LocalVault()
@@ -74,9 +102,12 @@ bool LocalVault::initialise()
         }
 #ifdef Q_OS_WIN
         masterKey_ = unprotectForCurrentUser(keyFile.readAll());
+#elif defined(Q_OS_ANDROID)
+        masterKey_ = loadAndroidKey();
+#elif defined(Q_OS_IOS)
+        masterKey_ = p2pAppleLoadOrCreateVaultKey(QStringLiteral("master-key"));
 #else
-        error_ = QStringLiteral("此平台的安全密钥存储尚未接入");
-        return false;
+        error_ = QStringLiteral("此平台的安全密钥存储尚未接入"); return false;
 #endif
         if (masterKey_.size() != keySize) {
             error_ = QStringLiteral("本地密钥无法由当前设备解锁");
@@ -103,6 +134,16 @@ bool LocalVault::initialise()
     }
     masterKey_ = key;
     return true;
+#elif defined(Q_OS_ANDROID)
+    masterKey_ = loadAndroidKey();
+    if (masterKey_.size() == keySize) return true;
+    error_ = QStringLiteral("Android Keystore 未能保护本地密钥");
+    return false;
+#elif defined(Q_OS_IOS)
+    masterKey_ = p2pAppleLoadOrCreateVaultKey(QStringLiteral("master-key"));
+    if (masterKey_.size() == keySize) return true;
+    error_ = QStringLiteral("iOS Keychain 未能保护本地密钥");
+    return false;
 #else
     Q_UNUSED(key)
     error_ = QStringLiteral("此平台的安全密钥存储尚未接入");

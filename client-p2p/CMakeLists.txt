@@ -36,6 +36,16 @@ if(WIN32)
     target_link_libraries(P2PMessenger PRIVATE crypt32)
 endif()
 
+if(APPLE)
+    target_sources(P2PMessenger PRIVATE src/local_vault_apple.mm)
+    target_link_libraries(P2PMessenger PRIVATE "-framework Security")
+endif()
+
+if(ANDROID)
+    set_property(TARGET P2PMessenger APPEND PROPERTY QT_ANDROID_PACKAGE_SOURCE_DIR
+        ${CMAKE_CURRENT_SOURCE_DIR}/android)
+endif()
+
 if(P2P_MESSENGER_WITH_DAEMON)
     if(NOT P2P_MESSENGER_DAEMON_INCLUDE_DIR OR NOT P2P_MESSENGER_DAEMON_LIBRARY)
         message(FATAL_ERROR "Set P2P_MESSENGER_DAEMON_INCLUDE_DIR and P2P_MESSENGER_DAEMON_LIBRARY when enabling the daemon engine")
