@@ -10,6 +10,7 @@
 #include <QStandardPaths>
 
 #ifdef Q_OS_WIN
+#include <windows.h>
 #include <bcrypt.h>
 #elif !defined(Q_OS_ANDROID)
 #include <openssl/evp.h>
@@ -57,10 +58,10 @@ QByteArray cngCrypt(bool encrypting, const QByteArray& key, const QByteArray& no
     QByteArray localTag(tagSize, Qt::Uninitialized); info.pbTag = reinterpret_cast<PUCHAR>(localTag.data()); info.cbTag = localTag.size();
     QByteArray output(input.size(), Qt::Uninitialized); ULONG written = 0;
     const auto status = encrypting
-        ? BCryptEncrypt(handle, reinterpret_cast<PUCHAR>(const_cast<char*>(input.constData())), input.size(), nullptr, nullptr, 0,
-                        reinterpret_cast<PUCHAR>(output.data()), output.size(), &written, 0, &info)
-        : BCryptDecrypt(handle, reinterpret_cast<PUCHAR>(const_cast<char*>(input.constData())), input.size(), nullptr, nullptr, 0,
-                        reinterpret_cast<PUCHAR>(output.data()), output.size(), &written, 0, &info);
+        ? BCryptEncrypt(handle, reinterpret_cast<PUCHAR>(const_cast<char*>(input.constData())), input.size(), &info, nullptr, 0,
+                        reinterpret_cast<PUCHAR>(output.data()), output.size(), &written, 0)
+        : BCryptDecrypt(handle, reinterpret_cast<PUCHAR>(const_cast<char*>(input.constData())), input.size(), &info, nullptr, 0,
+                        reinterpret_cast<PUCHAR>(output.data()), output.size(), &written, 0);
     BCryptDestroyKey(handle); BCryptCloseAlgorithmProvider(algorithm, 0);
     if (status != 0) return {};
     output.truncate(written); if (tag) *tag = localTag; return output;

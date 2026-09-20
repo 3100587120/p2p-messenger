@@ -11,7 +11,7 @@ ApplicationWindow {
     minimumHeight: 560
     visible: true
     title: "P2P Messenger"
-    color: "#101827"
+    color: "#0b1220"
 
     property color panel: "#182235"
     property color panelRaised: "#202d43"
@@ -90,6 +90,16 @@ ApplicationWindow {
         onAccepted: messenger.queueFile(selectedFile.toString().replace("file:///", ""))
     }
 
+    Rectangle {
+        anchors.fill: parent
+        z: -1
+        gradient: Gradient {
+            GradientStop { position: 0.0; color: "#0b1220" }
+            GradientStop { position: 0.55; color: "#111d31" }
+            GradientStop { position: 1.0; color: "#0b1220" }
+        }
+    }
+
     RowLayout {
         anchors.fill: parent
         anchors.margins: 16
@@ -98,14 +108,15 @@ ApplicationWindow {
         Rectangle {
             Layout.preferredWidth: 310
             Layout.fillHeight: true
-            color: window.panel
+            color: Qt.rgba(0.095, 0.14, 0.22, 0.96)
             radius: 20
             ColumnLayout {
                 anchors.fill: parent
                 anchors.margins: 20
-                spacing: 16
+                spacing: 18
                 RowLayout {
                     Layout.fillWidth: true
+                    Rectangle { width: 34; height: 34; radius: 10; color: window.accent; Label { anchors.centerIn: parent; text: "✦"; color: "#102132"; font.pixelSize: 20; font.bold: true } }
                     Label { text: "P2P"; color: window.accent; font.bold: true; font.pixelSize: 24 }
                     Label { text: "MESSENGER"; color: "white"; font.bold: true; font.pixelSize: 18; Layout.fillWidth: true }
                     Rectangle { width: 10; height: 10; radius: 5; color: window.accent }
@@ -143,7 +154,7 @@ ApplicationWindow {
         Rectangle {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            color: window.panel
+            color: Qt.rgba(0.095, 0.14, 0.22, 0.96)
             radius: 20
             ColumnLayout {
                 anchors.fill: parent
@@ -154,7 +165,7 @@ ApplicationWindow {
                     ColumnLayout {
                         spacing: 3
                         Label { text: messenger.activeContactName; color: "white"; font.pixelSize: 22; font.bold: true }
-                        Label { text: "端到端加密 · 本地记录"; color: window.subdued; font.pixelSize: 12 }
+                        Label { text: "端到端加密  ·  本地记录"; color: window.subdued; font.pixelSize: 12 }
                     }
                     Label { text: "私有网络"; color: window.accent; font.bold: true }
                 }
