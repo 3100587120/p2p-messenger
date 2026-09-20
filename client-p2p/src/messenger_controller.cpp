@@ -25,7 +25,9 @@ MessengerController::MessengerController(QObject* parent)
     }
     contacts_.append(contact(QStringLiteral("welcome"), tr("开始使用"), tr("本设备")));
     activeContactId_ = QStringLiteral("welcome");
-    appendMessage(tr("欢迎使用 P2P Messenger。创建或扫描好友邀请码后，即可建立端到端加密连接。"), false);
+    messages_ = vault_.loadConversation(activeContactId_);
+    if (messages_.isEmpty())
+        appendMessage(tr("欢迎使用 P2P Messenger。创建或扫描好友邀请码后，即可建立端到端加密连接。"), false);
 }
 
 QVariantList MessengerController::contacts() const { return contacts_; }
@@ -39,9 +41,10 @@ void MessengerController::selectContact(const QString& contactId)
     if (activeContactId_ == contactId)
         return;
     activeContactId_ = contactId;
-    messages_.clear();
-    appendMessage(tr("这是与 %1 的本地加密会话视图。通信内核接入后，消息仅发送给已验证设备。")
-                      .arg(contactName(contactId)), false);
+    messages_ = vault_.loadConversation(activeContactId_);
+    if (messages_.isEmpty())
+        appendMessage(tr("这是与 %1 的本地加密会话视图。通信内核接入后，消息仅发送给已验证设备。")
+                          .arg(contactName(contactId)), false);
     emit activeContactChanged();
     emit messagesChanged();
 }
@@ -130,6 +133,7 @@ void MessengerController::appendMessage(const QString& body, bool outgoing, cons
                                {QStringLiteral("kind"), kind},
                                {QStringLiteral("time"), QDateTime::currentDateTime().toString(QStringLiteral("HH:mm"))}};
     messages_.append(message);
+    vault_.saveConversation(activeContactId_, messages_);
     emit messagesChanged();
 }
 

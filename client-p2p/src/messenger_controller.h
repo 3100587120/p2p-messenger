@@ -5,6 +5,7 @@
 #include <QVariantList>
 
 #include "daemon_bridge.h"
+#include "local_vault.h"
 
 class MessengerController final : public QObject
 {
@@ -43,6 +44,7 @@ private:
     QString networkStatus_;
     QString accountId_;
     DaemonBridge daemon_;
+    LocalVault vault_;
 
     void appendMessage(const QString& body, bool outgoing, const QString& kind = QStringLiteral("text"));
     QString contactName(const QString& id) const;
