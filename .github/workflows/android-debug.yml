@@ -31,7 +31,9 @@ jobs:
           cache: gradle
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+        with:
+          packages: ''
 
       - name: Install native build dependencies
         run: |
@@ -41,7 +43,7 @@ jobs:
             ninja-build pkg-config swig yasm
           yes | sdkmanager --licenses
           sdkmanager \
-            "platforms;android-37" \
+            "platforms;android-37.0" \
             "build-tools;37.0.0" \
             "cmake;4.1.2" \
             "ndk;29.0.14206865"
