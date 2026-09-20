@@ -41,6 +41,25 @@ ApplicationWindow {
     }
 
     Dialog {
+        id: networkSettings
+        title: "自建网络设置"
+        modal: true
+        anchors.centerIn: parent
+        width: Math.min(440, window.width - 40)
+        standardButtons: Dialog.Cancel
+        background: Rectangle { color: window.panel; radius: 16 }
+        contentItem: ColumnLayout {
+            spacing: 10
+            Label { text: "仅填写你自己部署的服务；留空表示仅本地/直连。"; color: window.subdued; wrapMode: Text.Wrap; Layout.fillWidth: true }
+            TextField { id: rendezvousUrl; placeholderText: "wss://你的域名/v1/rendezvous"; Layout.fillWidth: true }
+            TextField { id: turnHost; placeholderText: "自建 TURN 主机"; Layout.fillWidth: true }
+            RowLayout { TextField { id: turnPort; text: "3478"; Layout.fillWidth: true }; TextField { id: turnUser; placeholderText: "TURN 用户名"; Layout.fillWidth: true } }
+            TextField { id: turnPassword; placeholderText: "TURN 密码"; echoMode: TextInput.Password; Layout.fillWidth: true }
+            Button { text: "保存自建配置"; Layout.alignment: Qt.AlignRight; onClicked: { if (messenger.configureNetwork(rendezvousUrl.text, turnHost.text, Number(turnPort.text), turnUser.text, turnPassword.text)) networkSettings.close() } }
+        }
+    }
+
+    Dialog {
         id: createGroup
         title: "新建群聊"
         modal: true
@@ -92,6 +111,7 @@ ApplicationWindow {
                 Label { text: messenger.networkStatus; color: window.subdued; font.pixelSize: 12; wrapMode: Text.Wrap; Layout.fillWidth: true }
                 Button { text: "+ 添加好友"; Layout.fillWidth: true; onClicked: addFriend.open() }
                 Button { text: "新建群聊"; Layout.fillWidth: true; onClicked: createGroup.open() }
+                Button { text: "自建网络设置"; Layout.fillWidth: true; onClicked: networkSettings.open() }
                 Label { text: "消息"; color: window.subdued; font.bold: true; font.pixelSize: 12 }
                 ListView {
                     Layout.fillWidth: true

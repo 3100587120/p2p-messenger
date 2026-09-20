@@ -142,3 +142,18 @@ bool DaemonBridge::sendFile(const QString& accountId, const QString& conversatio
     return false;
 #endif
 }
+
+bool DaemonBridge::configurePrivateNetwork(const QString& accountId, const PrivateNetworkConfig& config)
+{
+#ifdef P2P_MESSENGER_WITH_DAEMON
+    QString reason;
+    if (!started_ || !config.isValid(&reason) || accountId.isEmpty()) return false;
+    DRing::setAccountDetails(accountId.toStdString(), {{"TURN.enable", config.turnHost.isEmpty() ? "false" : "true"},
+                                                       {"TURN.server", config.turnHost.toStdString()},
+                                                       {"TURN.username", config.turnUser.toStdString()},
+                                                       {"TURN.password", config.turnPassword.toStdString()}});
+    return true;
+#else
+    Q_UNUSED(accountId); Q_UNUSED(config); return false;
+#endif
+}

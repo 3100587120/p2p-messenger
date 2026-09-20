@@ -6,6 +6,7 @@
 
 #include "daemon_bridge.h"
 #include "local_vault.h"
+#include "private_network_config.h"
 
 class MessengerController final : public QObject
 {
@@ -30,6 +31,8 @@ public:
     Q_INVOKABLE void createGroup(const QString& name, const QStringList& memberUris);
     Q_INVOKABLE void sendMessage(const QString& body);
     Q_INVOKABLE void queueFile(const QString& path);
+    Q_INVOKABLE bool configureNetwork(const QString& rendezvous, const QString& turnHost,
+                                       int turnPort, const QString& user, const QString& password);
 
 signals:
     void contactsChanged();

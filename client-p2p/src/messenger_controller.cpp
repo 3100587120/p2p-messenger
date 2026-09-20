@@ -137,6 +137,23 @@ void MessengerController::queueFile(const QString& path)
     }
 }
 
+bool MessengerController::configureNetwork(const QString& rendezvous, const QString& turnHost,
+                                            int turnPort, const QString& user, const QString& password)
+{
+    PrivateNetworkConfig config {rendezvous.trimmed(), turnHost.trimmed(), static_cast<quint16>(turnPort), user, password};
+    QString reason;
+    if (!config.isValid(&reason)) {
+        networkStatus_ = reason;
+        emit networkStatusChanged();
+        return false;
+    }
+    if (!accountId_.isEmpty() && !daemon_.configurePrivateNetwork(accountId_, config))
+        return false;
+    networkStatus_ = config.isEmpty() ? tr("仅本地模式 — 未配置自建服务") : tr("已配置自建网络 — 直连优先");
+    emit networkStatusChanged();
+    return true;
+}
+
 void MessengerController::appendMessage(const QString& body, bool outgoing, const QString& kind)
 {
     const QVariantMap message {{QStringLiteral("body"), body},

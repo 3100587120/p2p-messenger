@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <QString>
+#include "private_network_config.h"
 
 // The only client-to-engine boundary.  Keeping the Jami API behind this small
 // adapter prevents upstream UI code or network defaults from leaking into the
@@ -21,6 +22,7 @@ public:
     bool addGroupMember(const QString& accountId, const QString& conversationId, const QString& contactUri);
     bool sendText(const QString& accountId, const QString& conversationId, const QString& text);
     bool sendFile(const QString& accountId, const QString& conversationId, const QString& path);
+    bool configurePrivateNetwork(const QString& accountId, const PrivateNetworkConfig& config);
 
 signals:
     void incomingMessage(const QString& conversationId, const QString& body);
