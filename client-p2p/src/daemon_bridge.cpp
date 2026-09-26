@@ -10,6 +10,9 @@
 #include <jami/datatransfer_interface.h>
 #include <jami/jami.h>
 #include <gnutls/gnutls.h>
+#if defined(Q_OS_ANDROID)
+namespace DRing = libjami;
+#endif
 #endif
 
 bool DaemonBridge::start()
