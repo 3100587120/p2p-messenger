@@ -133,7 +133,9 @@ QByteArray androidCrypt(const char* method, const QByteArray& key, const QByteAr
 }
 
 LocalVault::LocalVault()
-    : rootPath_(QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation))
+    : rootPath_(QDir(qEnvironmentVariable("P2P_MESSENGER_DATA_ROOT").isEmpty()
+                         ? QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)
+                         : qEnvironmentVariable("P2P_MESSENGER_DATA_ROOT"))
                     .filePath(QStringLiteral("vault")))
 {
     initialise();

@@ -35,7 +35,7 @@ ApplicationWindow {
                 text: "验证并添加"
                 enabled: friendName.text.trim().length > 0 && invite.text.trim().length > 0
                 Layout.alignment: Qt.AlignRight
-                onClicked: { messenger.addContact(friendName.text, invite.text); addFriend.close() }
+                onClicked: { if (messenger.addContact(friendName.text, invite.text)) addFriend.close() }
             }
         }
     }
@@ -50,8 +50,8 @@ ApplicationWindow {
         background: Rectangle { color: window.panel; radius: 16 }
         contentItem: ColumnLayout {
             spacing: 10
-            Label { text: "仅填写你自己部署的服务；留空表示仅本地/直连。"; color: window.subdued; wrapMode: Text.Wrap; Layout.fillWidth: true }
-            TextField { id: rendezvousUrl; placeholderText: "wss://你的域名/v1/rendezvous"; Layout.fillWidth: true }
+            Label { text: "填写你自己部署的 DHT 引导节点和 TURN；留空表示仅局域网发现。"; color: window.subdued; wrapMode: Text.Wrap; Layout.fillWidth: true }
+            TextField { id: rendezvousUrl; placeholderText: "自建 DHT 节点，例如 chat.example.com:4222"; Layout.fillWidth: true }
             TextField { id: turnHost; placeholderText: "自建 TURN 主机"; Layout.fillWidth: true }
             RowLayout {
                 TextField { id: turnPort; text: "3478"; Layout.fillWidth: true }
@@ -79,7 +79,7 @@ ApplicationWindow {
                 text: "创建加密群聊"
                 enabled: groupName.text.trim().length > 0
                 Layout.alignment: Qt.AlignRight
-                onClicked: { messenger.createGroup(groupName.text, groupMembers.text.split("\n")); createGroup.close() }
+                onClicked: { if (messenger.createGroup(groupName.text, groupMembers.text.split("\n"))) createGroup.close() }
             }
         }
     }
@@ -87,7 +87,16 @@ ApplicationWindow {
     FileDialog {
         id: filePicker
         title: "选择要发送的文件"
-        onAccepted: messenger.queueFile(selectedFile.toString().replace("file:///", ""))
+        onAccepted: messenger.queueFile(selectedFile.toString())
+    }
+
+    FileDialog {
+        id: saveFileDialog
+        title: "保存收到的文件"
+        fileMode: FileDialog.SaveFile
+        property string interactionId: ""
+        property string fileId: ""
+        onAccepted: messenger.downloadFile(interactionId, fileId, selectedFile.toString())
     }
 
     Rectangle {
@@ -123,6 +132,30 @@ ApplicationWindow {
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#30415d" }
                 Label { text: messenger.networkStatus; color: window.subdued; font.pixelSize: 12; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                Label { text: messenger.inviteCode.length ? "我的邀请码" : "正在生成本机邀请码"; color: window.subdued; font.pixelSize: 12 }
+                Label { text: messenger.inviteCode; color: "white"; font.pixelSize: 11; wrapMode: Text.WrapAnywhere; Layout.fillWidth: true; visible: messenger.inviteCode.length > 0 }
+                Button { text: "复制我的邀请码"; enabled: messenger.inviteCode.length > 0; Layout.fillWidth: true; onClicked: messenger.copyInviteCode() }
+                Label { text: messenger.lastError; color: "#ff9c9c"; font.pixelSize: 12; wrapMode: Text.Wrap; Layout.fillWidth: true; visible: messenger.lastError.length > 0 }
+                Label { text: "待处理好友申请"; color: window.accent; font.pixelSize: 12; visible: messenger.pendingRequests.length > 0 }
+                Repeater {
+                    model: messenger.pendingRequests
+                    delegate: RowLayout {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        Label { text: modelData.slice(0, 12) + "…"; color: "white"; Layout.fillWidth: true }
+                        Button { text: "接受"; onClicked: messenger.acceptFriendRequest(modelData) }
+                    }
+                }
+                Label { text: "待处理群聊邀请"; color: window.accent; font.pixelSize: 12; visible: messenger.pendingGroupRequests.length > 0 }
+                Repeater {
+                    model: messenger.pendingGroupRequests
+                    delegate: RowLayout {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        Label { text: "群聊 " + modelData.slice(0, 10) + "…"; color: "white"; Layout.fillWidth: true }
+                        Button { text: "加入"; onClicked: messenger.acceptGroupRequest(modelData) }
+                    }
+                }
                 Button { text: "+ 添加好友"; Layout.fillWidth: true; onClicked: addFriend.open() }
                 Button { text: "新建群聊"; Layout.fillWidth: true; onClicked: createGroup.open() }
                 Button { text: "自建网络设置"; Layout.fillWidth: true; onClicked: networkSettings.open() }
@@ -185,9 +218,25 @@ ApplicationWindow {
                             anchors.right: modelData.outgoing ? parent.right : undefined
                             color: modelData.outgoing ? "#296e66" : window.panelRaised
                             radius: 14
-                            width: Math.min(parent.width * .76, messageText.implicitWidth + 34)
-                            implicitHeight: messageText.implicitHeight + 26
-                            Label { id: messageText; anchors.margins: 13; anchors.fill: parent; text: modelData.body; color: "white"; wrapMode: Text.Wrap; font.pixelSize: 15 }
+                            width: Math.min(parent.width * .76, Math.max(messageText.implicitWidth + 34, modelData.kind === "file-offer" ? 220 : 0))
+                            implicitHeight: bubbleContents.implicitHeight + 26
+                            ColumnLayout {
+                                id: bubbleContents
+                                anchors.fill: parent
+                                anchors.margins: 13
+                                spacing: 8
+                                Label { id: messageText; Layout.fillWidth: true; text: modelData.body; color: "white"; wrapMode: Text.Wrap; font.pixelSize: 15 }
+                                Button {
+                                    text: "保存文件"
+                                    visible: modelData.kind === "file-offer" && !modelData.body.includes("已完成")
+                                    Layout.alignment: Qt.AlignLeft
+                                    onClicked: {
+                                        saveFileDialog.interactionId = modelData.interactionId
+                                        saveFileDialog.fileId = modelData.fileId
+                                        saveFileDialog.open()
+                                    }
+                                }
+                            }
                         }
                     }
                     onCountChanged: positionViewAtEnd()
@@ -199,9 +248,9 @@ ApplicationWindow {
                         id: composer
                         Layout.fillWidth: true
                         placeholderText: "输入消息"
-                        onAccepted: { messenger.sendMessage(text); text = "" }
+                        onAccepted: { if (messenger.sendMessage(text)) text = "" }
                     }
-                    Button { text: "发送"; enabled: composer.text.trim().length > 0; onClicked: { messenger.sendMessage(composer.text); composer.text = "" } }
+                    Button { text: "发送"; enabled: composer.text.trim().length > 0; onClicked: { if (messenger.sendMessage(composer.text)) composer.text = "" } }
                 }
             }
         }

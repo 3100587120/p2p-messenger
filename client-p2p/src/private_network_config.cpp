@@ -1,15 +1,18 @@
 #include "private_network_config.h"
 
-#include <QUrl>
+#include <QRegularExpression>
 
 bool PrivateNetworkConfig::isValid(QString* reason) const
 {
-    if (rendezvousUrl.isEmpty() && turnHost.isEmpty())
+    if (bootstrapNode.isEmpty() && turnHost.isEmpty())
         return true;
-    const QUrl rendezvous(rendezvousUrl);
-    if (!rendezvousUrl.isEmpty()) {
-        if (!rendezvous.isValid() || rendezvous.scheme() != QStringLiteral("wss")) {
-            if (reason) *reason = QStringLiteral("信令地址必须使用自建 wss:// 地址");
+    if (!bootstrapNode.isEmpty()) {
+        static const QRegularExpression endpoint(
+            QStringLiteral(R"(^(?:\[[0-9A-Fa-f:]+\]|[A-Za-z0-9.-]+):([0-9]{1,5})$)"));
+        const auto match = endpoint.match(bootstrapNode);
+        const auto port = match.hasMatch() ? match.captured(1).toInt() : 0;
+        if (port < 1 || port > 65535) {
+            if (reason) *reason = QStringLiteral("自建 DHT 引导节点须填写 主机:端口");
             return false;
         }
     }

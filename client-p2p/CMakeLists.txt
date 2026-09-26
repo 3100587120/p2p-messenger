@@ -9,7 +9,8 @@ if(NOT WIN32 AND NOT ANDROID)
     find_package(OpenSSL REQUIRED)
 endif()
 
-option(P2P_MESSENGER_WITH_DAEMON "Link the private Jami daemon engine" OFF)
+option(P2P_MESSENGER_WITH_DAEMON "Link the private Jami daemon engine" ON)
+option(P2P_MESSENGER_BUILD_DAEMON_E2E "Build a local two-identity daemon integration test" OFF)
 set(P2P_MESSENGER_DAEMON_INCLUDE_DIR "" CACHE PATH "Directory containing jami/jami.h")
 set(P2P_MESSENGER_DAEMON_LIBRARY "" CACHE FILEPATH "Private daemon library")
 
@@ -61,6 +62,49 @@ if(P2P_MESSENGER_WITH_DAEMON)
     target_compile_definitions(P2PMessenger PRIVATE P2P_MESSENGER_WITH_DAEMON=1)
     target_include_directories(P2PMessenger PRIVATE ${P2P_MESSENGER_DAEMON_INCLUDE_DIR})
     target_link_libraries(P2PMessenger PRIVATE ${P2P_MESSENGER_DAEMON_LIBRARY})
+    if(WIN32)
+        get_filename_component(_daemon_root "${P2P_MESSENGER_DAEMON_INCLUDE_DIR}" DIRECTORY)
+        set(_contrib "${_daemon_root}/contrib")
+        target_include_directories(P2PMessenger PRIVATE "${_contrib}/msvc/include")
+        target_link_directories(P2PMessenger PRIVATE "${_contrib}/msvc/lib/x64")
+        target_link_libraries(P2PMessenger PRIVATE
+            "${_contrib}/build/ffmpeg/Build/win32/x64/bin/avcodec.lib"
+            "${_contrib}/build/ffmpeg/Build/win32/x64/bin/avdevice.lib"
+            "${_contrib}/build/ffmpeg/Build/win32/x64/bin/avfilter.lib"
+            "${_contrib}/build/ffmpeg/Build/win32/x64/bin/avformat.lib"
+            "${_contrib}/build/ffmpeg/Build/win32/x64/bin/avutil.lib"
+            "${_contrib}/build/ffmpeg/Build/win32/x64/bin/swresample.lib"
+            "${_contrib}/build/ffmpeg/Build/win32/x64/bin/swscale.lib"
+            "${_contrib}/msvc/lib/x64/libgnutls.lib"
+            "${_contrib}/msvc/lib/x64/lib_json.lib"
+            "${_contrib}/build/opendht/build/Release/libopendht.lib"
+            "${_contrib}/build/argon2/vs2015/Argon2Ref/vs2015/build/Argon2Ref.lib"
+            "${_contrib}/msvc/lib/x64/secp256k1.lib"
+            "${_contrib}/build/yaml-cpp/msvc/Release/libyaml-cppmd.lib"
+            "${_contrib}/msvc/lib/x64/libupnp.lib"
+            "${_contrib}/build/natpmp/msvc/Release/natpmp.lib"
+            "${_contrib}/msvc/lib/x64/archive_static.lib"
+            "${_contrib}/build/pjproject/pjsip/lib/pjsip-core-x86_64-x64-vc15-Release.lib"
+            "${_contrib}/build/pjproject/pjsip/lib/pjsip-simple-x86_64-x64-vc15-Release.lib"
+            "${_contrib}/build/pjproject/pjsip/lib/pjsua2-lib-x86_64-x64-vc15-Release.lib"
+            "${_contrib}/build/pjproject/pjsip/lib/pjsua-lib-x86_64-x64-vc15-Release.lib"
+            "${_contrib}/build/pjproject/pjsip/lib/pjsip-ua-x86_64-x64-vc15-Release.lib"
+            "${_contrib}/build/pjproject/pjmedia/lib/pjmedia-x86_64-x64-vc15-Release.lib"
+            "${_contrib}/build/pjproject/pjlib-util/lib/pjlib-util-x86_64-x64-vc15-Release.lib"
+            "${_contrib}/build/pjproject/pjlib/lib/pjlib-x86_64-x64-vc15-Release.lib"
+            "${_contrib}/build/pjproject/pjnath/lib/pjnath-x86_64-x64-vc15-Release.lib"
+            "${_contrib}/build/fmt/msvc/Release/fmt.lib"
+            "${_contrib}/build/http_parser/x64/Release/http-parser.lib"
+            "${_contrib}/build/openssl/libcrypto.lib"
+            "${_contrib}/build/openssl/libssl.lib"
+            "${_contrib}/build/speexdsp/lib/libspeexdsp.lib"
+            "${_contrib}/build/webrtc-audio-processing/build/Release/webrtc-audio-processing.lib"
+            "${_contrib}/build/portaudio/build/Release/portaudio_static_x64.lib"
+            "${_contrib}/build/libgit2/msvc/Release/git2.lib"
+            ws2_32 advapi32 strmiids
+        )
+        target_link_options(P2PMessenger PRIVATE /LTCG /ignore:4006)
+    endif()
 endif()
 
 set_target_properties(P2PMessenger PROPERTIES
@@ -74,3 +118,16 @@ install(TARGETS P2PMessenger
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
+
+if(P2P_MESSENGER_BUILD_DAEMON_E2E)
+    if(NOT WIN32 OR NOT P2P_MESSENGER_WITH_DAEMON)
+        message(FATAL_ERROR "The daemon end-to-end test currently requires the Windows daemon build")
+    endif()
+    add_executable(P2PMessengerDaemonE2E tests/daemon_e2e.cpp)
+    target_include_directories(P2PMessengerDaemonE2E PRIVATE
+        ${P2P_MESSENGER_DAEMON_INCLUDE_DIR} "${_contrib}/msvc/include")
+    target_link_directories(P2PMessengerDaemonE2E PRIVATE "${_contrib}/msvc/lib/x64")
+    get_target_property(_p2p_messenger_links P2PMessenger LINK_LIBRARIES)
+    target_link_libraries(P2PMessengerDaemonE2E PRIVATE ${_p2p_messenger_links})
+    target_link_options(P2PMessengerDaemonE2E PRIVATE /LTCG /ignore:4006)
+endif()
