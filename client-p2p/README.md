@@ -65,17 +65,20 @@ checks remain required before release; strict direct mode never uses TURN.
 
 ## Strict two-device pairing
 
-The client can list nearby LAN accounts for one-tap adding. The account dialog
-can also copy a pairing code containing the local Jami ID and a numeric
-`IP:port`; a single button fills a private IPv4 address and copies this code.
-The other device can paste it into Add Friend, with no manual friend name.
+The single Connect Device dialog lists nearby LAN accounts for one-tap adding
+and accepts a pairing code from another network. Share My Pairing Code
+automatically includes up to two globally addressed IPv6 endpoints and a
+private IPv4 endpoint when available. The other device can paste it without
+entering a name or address manually. Action failures appear in a modal dialog
+with a suggested next step; an unconfirmed connection prompts after one minute.
 The app uses the peer as its DHT entry point, not a hosted service. There is
 no TURN relay. On the same LAN, the Jami ID alone can use local peer discovery.
-The suggested LAN address button uses the device's private IPv4 address and
-its actual bound DHT port. Across networks, an address must be publicly
-reachable (for example, global IPv6 or a manually forwarded UDP port). The
-app does not discover or verify a public address, and connection success is
-not guaranteed behind two restrictive NATs.
+The suggested endpoints use the actual bound DHT port. Across networks, an
+address must still be publicly reachable (for example, global IPv6 or a
+manually forwarded UDP port). The app does not automatically map router ports,
+discover public IPv4 addresses, or verify reachability, so connection success
+is not guaranteed behind restrictive NATs. Advanced settings remain available
+for a manually reachable address.
 
 ## Current limits
 

@@ -1,4 +1,5 @@
 #include <QGuiApplication>
+#include <QQuickStyle>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QFile>
@@ -26,6 +27,7 @@ void traceStartup(const char* stage)
 int main(int argc, char* argv[])
 {
     traceStartup("entry");
+    QQuickStyle::setStyle(QStringLiteral("Material"));
     QGuiApplication application(argc, argv);
     traceStartup("qt-ready");
     QGuiApplication::setApplicationName(QStringLiteral("P2P Messenger"));

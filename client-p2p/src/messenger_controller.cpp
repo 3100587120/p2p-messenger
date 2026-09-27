@@ -58,6 +58,18 @@ QString numericEndpoint(const QString& input)
     return QStringLiteral("%1:%2").arg(address.toString()).arg(port);
 }
 
+QString numericEndpointList(const QString& input)
+{
+    QStringList endpoints;
+    for (const auto& part : input.split(QLatin1Char(';'), Qt::SkipEmptyParts)) {
+        const auto endpoint = numericEndpoint(part);
+        if (endpoint.isEmpty()) return {};
+        if (!endpoints.contains(endpoint)) endpoints.append(endpoint);
+        if (endpoints.size() > 4) return {};
+    }
+    return endpoints.join(QLatin1Char(';'));
+}
+
 bool decodePairingCode(const QString& code, QString* peer, QString* endpoint, QString* name)
 {
     const QUrl url(code, QUrl::StrictMode);
@@ -67,7 +79,9 @@ bool decodePairingCode(const QString& code, QString* peer, QString* endpoint, QS
     if (query.queryItemValue(QStringLiteral("v")) != QStringLiteral("1")) return false;
     const auto id = query.queryItemValue(QStringLiteral("peer"));
     static const QRegularExpression identity(QStringLiteral("^[0-9a-fA-F]{40}$"));
-    const auto address = numericEndpoint(query.queryItemValue(QStringLiteral("node")));
+    const auto addresses = query.allQueryItemValues(QStringLiteral("node"));
+    if (addresses.isEmpty() || addresses.size() > 4) return false;
+    const auto address = numericEndpointList(addresses.join(QLatin1Char(';')));
     if (!identity.match(id).hasMatch() || address.isEmpty()) return false;
     *peer = id.toLower();
     *endpoint = address;
@@ -123,6 +137,8 @@ MessengerController::MessengerController(QObject* parent)
     connect(&daemon_, &DaemonBridge::transferChanged, this,
             [this](const QString& conversationId, const QString& fileId,
                    int eventCode, qint64 progress, qint64 total) {
+                if (eventCode >= 7 || eventCode == 2)
+                    setError(tr("文件传输中断。请确认两台设备都在线、网络未切换，然后重新发送或接收。"));
                 bool documentWriteFailed = false;
 #ifdef Q_OS_ANDROID
                 const auto transferKey = conversationId + QLatin1Char('\n') + fileId;
@@ -279,7 +295,7 @@ MessengerController::MessengerController(QObject* parent)
         const auto profile = savedProfile.first().toMap();
         if (profile.value(QStringLiteral("accountId")).toString() == accountId_) {
             profileName_ = profile.value(QStringLiteral("profileName")).toString();
-            directEndpoint_ = numericEndpoint(profile.value(QStringLiteral("directEndpoint")).toString());
+            directEndpoint_ = numericEndpointList(profile.value(QStringLiteral("directEndpoint")).toString());
             contacts_ = profile.value(QStringLiteral("contacts")).toList();
             const auto network = profile.value(QStringLiteral("network")).toMap();
             QStringList verifiedNodes;
@@ -344,7 +360,8 @@ QString MessengerController::pairingCode() const
     QUrlQuery query;
     query.addQueryItem(QStringLiteral("v"), QStringLiteral("1"));
     query.addQueryItem(QStringLiteral("peer"), inviteCode_);
-    query.addQueryItem(QStringLiteral("node"), directEndpoint_);
+    for (const auto& endpoint : directEndpoint_.split(QLatin1Char(';'), Qt::SkipEmptyParts))
+        query.addQueryItem(QStringLiteral("node"), endpoint);
     if (!profileName_.isEmpty()) query.addQueryItem(QStringLiteral("name"), profileName_);
     url.setQuery(query);
     return url.toString(QUrl::FullyEncoded);
@@ -399,9 +416,9 @@ bool MessengerController::retryIdentity()
 
 bool MessengerController::setDirectEndpoint(const QString& endpoint)
 {
-    const auto normalized = endpoint.trimmed().isEmpty() ? QString {} : numericEndpoint(endpoint);
+    const auto normalized = endpoint.trimmed().isEmpty() ? QString {} : numericEndpointList(endpoint);
     if (!endpoint.trimmed().isEmpty() && normalized.isEmpty()) {
-        setError(tr("请填写可达的数字 IP:端口，例如 192.168.1.2:4222；IPv6 须加方括号"));
+        setError(tr("地址格式不正确。请填写 IP:端口；IPv6 地址须加方括号。"));
         return false;
     }
     if (directEndpoint_ != normalized) {
@@ -420,15 +437,28 @@ bool MessengerController::useLocalNetworkAddress()
         setError(tr("本机监听端口尚未就绪，请稍后重试"));
         return false;
     }
-    for (const auto& address : QNetworkInterface::allAddresses()) {
-        if (address.protocol() != QAbstractSocket::IPv4Protocol || address.isLoopback()) continue;
-        const auto privateAddress = address.isInSubnet(QHostAddress(QStringLiteral("10.0.0.0")), 8) ||
-                                    address.isInSubnet(QHostAddress(QStringLiteral("172.16.0.0")), 12) ||
-                                    address.isInSubnet(QHostAddress(QStringLiteral("192.168.0.0")), 16);
-        if (privateAddress)
-            return setDirectEndpoint(QStringLiteral("%1:%2").arg(address.toString()).arg(listeningPort_));
+    QStringList candidates;
+    QString localAddress;
+    for (const auto& interface : QNetworkInterface::allInterfaces()) {
+        if (!(interface.flags() & QNetworkInterface::IsUp) ||
+            (interface.flags() & QNetworkInterface::IsLoopBack)) continue;
+        for (const auto& entry : interface.addressEntries()) {
+            const auto address = entry.ip();
+            if (address.protocol() == QAbstractSocket::IPv6Protocol &&
+                address.isInSubnet(QHostAddress(QStringLiteral("2000::")), 3) &&
+                candidates.size() < 2)
+                candidates.append(QStringLiteral("[%1]:%2").arg(address.toString()).arg(listeningPort_));
+            if (address.protocol() != QAbstractSocket::IPv4Protocol || !localAddress.isEmpty()) continue;
+            const auto privateAddress = address.isInSubnet(QHostAddress(QStringLiteral("10.0.0.0")), 8) ||
+                                        address.isInSubnet(QHostAddress(QStringLiteral("172.16.0.0")), 12) ||
+                                        address.isInSubnet(QHostAddress(QStringLiteral("192.168.0.0")), 16);
+            if (privateAddress)
+                localAddress = QStringLiteral("%1:%2").arg(address.toString()).arg(listeningPort_);
+        }
     }
-    setError(tr("未找到本机局域网 IPv4 地址，请手动填写"));
+    if (!localAddress.isEmpty()) candidates.append(localAddress);
+    if (!candidates.isEmpty()) return setDirectEndpoint(candidates.join(QLatin1Char(';')));
+    setError(tr("没有找到可分享的网络地址。请连接 Wi-Fi，或在高级网络设置中填写可达地址。"));
     return false;
 }
 
@@ -479,8 +509,10 @@ void MessengerController::selectContact(const QString& contactId)
 
 bool MessengerController::addContact(const QString& name, const QString& invite)
 {
-    if (invite.trimmed().isEmpty())
+    if (invite.trimmed().isEmpty()) {
+        setError(tr("还没有填写配对码。请让对方点击“分享我的配对码”后发给你。"));
         return false;
+    }
     if (accountId_.isEmpty() || inviteCode_.isEmpty()) {
         setError(tr("本机身份仍在生成，稍后再添加好友"));
         return false;
@@ -490,13 +522,13 @@ bool MessengerController::addContact(const QString& name, const QString& invite)
     QString peerName;
     if (peerCode.startsWith(QStringLiteral("p2pm:"))) {
         if (!decodePairingCode(peerCode, &peerCode, &peerEndpoint, &peerName)) {
-            setError(tr("双机配对码格式无效"));
+            setError(tr("配对码无法识别。请让对方重新复制完整配对码，不要截断。"));
             return false;
         }
     }
     static const QRegularExpression identity(QStringLiteral("^[0-9a-fA-F]{40}$"));
     if (!identity.match(peerCode).hasMatch()) {
-        setError(tr("请输入 40 位设备邀请码或完整双机配对码"));
+        setError(tr("设备码不完整。请粘贴对方分享的完整配对码。"));
         return false;
     }
     peerCode = peerCode.toLower();
@@ -510,13 +542,15 @@ bool MessengerController::addContact(const QString& name, const QString& invite)
     if (!peerEndpoint.isEmpty()) {
         auto directConfig = networkConfig_;
         auto nodes = directConfig.bootstrapNode.split(QLatin1Char(';'), Qt::SkipEmptyParts);
-        if (!nodes.contains(peerEndpoint)) nodes.append(peerEndpoint);
+        for (const auto& endpoint : peerEndpoint.split(QLatin1Char(';'), Qt::SkipEmptyParts)) {
+            if (!nodes.contains(endpoint)) nodes.append(endpoint);
+        }
         directConfig.bootstrapNode = nodes.join(QLatin1Char(';'));
         directConfig.turnHost.clear();
         directConfig.turnUser.clear();
         directConfig.turnPassword.clear();
         if (!daemon_.configurePrivateNetwork(accountId_, directConfig)) {
-            setError(tr("无法应用对方设备的直连地址"));
+            setError(tr("无法保存对方的直连地址。请重启应用后重新粘贴配对码。"));
             return false;
         }
         networkConfig_ = directConfig;
@@ -533,12 +567,12 @@ bool MessengerController::addContact(const QString& name, const QString& invite)
         }
     }
     if (!daemon_.addVerifiedContact(accountId_, peerCode)) {
-        setError(tr("好友申请未能提交"));
+        setError(tr("好友申请未提交。请确认本机账号已就绪，再重新粘贴对方的配对码。"));
         return false;
     }
     const auto conversationId = daemon_.createConversation(accountId_, peerCode);
     if (conversationId.isEmpty()) {
-        setError(tr("无法创建私聊会话"));
+        setError(tr("私聊未能创建。请稍后重试；跨网使用时还需确保对方设备可直连。"));
         return false;
     }
     const auto id = QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -550,6 +584,16 @@ bool MessengerController::addContact(const QString& name, const QString& invite)
     saveProfile();
     emit contactsChanged();
     selectContact(id);
+    QTimer::singleShot(60000, this, [this, id] {
+        for (const auto& value : contacts_) {
+            const auto candidate = value.toMap();
+            if (candidate.value(QStringLiteral("id")).toString() == id &&
+                !candidate.value(QStringLiteral("ready"), false).toBool()) {
+                setError(tr("连接尚未建立。请让对方打开双点聊并接受申请；跨网时也可能是双方网络不允许直连。"));
+                break;
+            }
+        }
+    });
     setError({});
     return true;
 }
@@ -607,16 +651,16 @@ bool MessengerController::sendMessage(const QString& body)
         const auto conversationId = current.value(QStringLiteral("conversationId")).toString();
         if (accountId_.isEmpty() || conversationId.isEmpty() ||
             !current.value(QStringLiteral("ready"), true).toBool()) {
-            setError(tr("会话尚未就绪，请等对方确认并完成连接"));
+            setError(tr("还不能发送：请先等待对方接受好友申请并保持应用在线。"));
             return false;
         }
         if (!daemon_.sendText(accountId_, conversationId, text)) {
-            setError(tr("消息未能提交给通信内核"));
+            setError(tr("消息未发送。请检查网络连接，并确认对方设备在线后重试。"));
             return false;
         }
         return true;
     }
-    setError(tr("请选择已经建立的会话"));
+    setError(tr("请先选择已连接的好友或群聊，再发送消息。"));
     return false;
 }
 
@@ -634,7 +678,7 @@ bool MessengerController::queueFile(const QString& path)
     }
 #endif
     if (localPath.isEmpty() || !QFileInfo::exists(localPath)) {
-        setError(tr("找不到要发送的文件"));
+        setError(tr("无法读取所选文件。请确认文件仍存在，并允许应用访问它。"));
         return false;
     }
     for (const auto& item : contacts_) {
@@ -644,18 +688,18 @@ bool MessengerController::queueFile(const QString& path)
         const auto conversationId = current.value(QStringLiteral("conversationId")).toString();
         if (accountId_.isEmpty() || conversationId.isEmpty() ||
             !current.value(QStringLiteral("ready"), true).toBool()) {
-            setError(tr("会话尚未就绪，请等对方确认并完成连接"));
+            setError(tr("还不能发送文件：请等待对方接受好友申请并保持应用在线。"));
             return false;
         }
         if (!daemon_.sendFile(accountId_, conversationId, localPath)) {
-            setError(tr("文件未能提交给通信内核"));
+            setError(tr("文件未开始传输。请检查网络和文件权限后重试。"));
             return false;
         }
         appendMessage(tr("文件：%1（等待端到端传输）").arg(QFileInfo(localPath).fileName()), true,
                       QStringLiteral("file"));
         return true;
     }
-    setError(tr("请选择已经建立的会话"));
+    setError(tr("请先选择已连接的好友或群聊，再发送文件。"));
     return false;
 }
 
@@ -683,7 +727,7 @@ bool MessengerController::downloadFile(const QString& interactionId, const QStri
         const auto conversationId = contact.value(QStringLiteral("conversationId")).toString();
         if (conversationId.isEmpty() || !daemon_.downloadFile(accountId_, conversationId,
                                                                interactionId, fileId, localPath)) {
-            setError(tr("无法开始下载文件"));
+            setError(tr("无法开始接收文件。请确认发送方在线、文件仍可用，然后重试。"));
             return false;
         }
 #ifdef Q_OS_ANDROID
@@ -695,6 +739,7 @@ bool MessengerController::downloadFile(const QString& interactionId, const QStri
 #endif
         return true;
     }
+    setError(tr("请先选择收到文件的会话，再尝试保存。"));
     return false;
 }
 
