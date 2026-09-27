@@ -18,6 +18,8 @@ class MessengerController final : public QObject
     Q_PROPERTY(QString activeContactName READ activeContactName NOTIFY activeContactChanged)
     Q_PROPERTY(QString networkStatus READ networkStatus NOTIFY networkStatusChanged)
     Q_PROPERTY(QString inviteCode READ inviteCode NOTIFY inviteCodeChanged)
+    Q_PROPERTY(QString accountId READ accountId NOTIFY accountIdChanged)
+    Q_PROPERTY(QString profileName READ profileName NOTIFY profileNameChanged)
     Q_PROPERTY(QString lastError READ lastError NOTIFY lastErrorChanged)
     Q_PROPERTY(QStringList pendingRequests READ pendingRequests NOTIFY pendingRequestsChanged)
     Q_PROPERTY(QStringList pendingGroupRequests READ pendingGroupRequests NOTIFY pendingGroupRequestsChanged)
@@ -32,6 +34,8 @@ public:
     QString activeContactName() const;
     QString networkStatus() const;
     QString inviteCode() const;
+    QString accountId() const;
+    QString profileName() const;
     QString lastError() const;
     QStringList pendingRequests() const;
     QStringList pendingGroupRequests() const;
@@ -44,6 +48,8 @@ public:
     Q_INVOKABLE bool downloadFile(const QString& interactionId, const QString& fileId,
                                   const QString& destination);
     Q_INVOKABLE void copyInviteCode();
+    Q_INVOKABLE bool setProfileName(const QString& name);
+    Q_INVOKABLE bool retryIdentity();
     Q_INVOKABLE bool acceptFriendRequest(const QString& contactUri);
     Q_INVOKABLE bool acceptGroupRequest(const QString& conversationId);
     Q_INVOKABLE bool configureNetwork(const QString& rendezvous, const QString& turnHost,
@@ -55,6 +61,8 @@ signals:
     void activeContactChanged();
     void networkStatusChanged();
     void inviteCodeChanged();
+    void accountIdChanged();
+    void profileNameChanged();
     void lastErrorChanged();
     void pendingRequestsChanged();
     void pendingGroupRequestsChanged();
@@ -66,6 +74,7 @@ private:
     QString networkStatus_;
     QString accountId_;
     QString inviteCode_;
+    QString profileName_;
     QString lastError_;
     QStringList pendingRequests_;
     QStringList pendingGroupRequests_;

@@ -19,6 +19,7 @@ public:
 
     QString createLocalIdentity(const QString& displayName);
     QString inviteCode(const QString& accountId) const;
+    bool setIdentityAlias(const QString& accountId, const QString& alias);
     bool addVerifiedContact(const QString& accountId, const QString& contactUri);
     QString createEmptyConversation(const QString& accountId);
     QString createConversation(const QString& accountId, const QString& contactUri);

@@ -5,10 +5,10 @@ import QtQuick.Dialogs
 
 ApplicationWindow {
     id: window
-    width: 1160
-    height: 760
-    minimumWidth: 740
-    minimumHeight: 560
+    width: Qt.platform.os === "android" ? 390 : 1160
+    height: Qt.platform.os === "android" ? 780 : 760
+    minimumWidth: Qt.platform.os === "android" ? 320 : 740
+    minimumHeight: Qt.platform.os === "android" ? 480 : 560
     visible: true
     title: "P2P Messenger"
     color: "#0b1220"
@@ -17,6 +17,41 @@ ApplicationWindow {
     property color panelRaised: "#202d43"
     property color accent: "#68d7bb"
     property color subdued: "#91a1bb"
+    property bool mobile: Qt.platform.os === "android" || width < 740
+    property bool showThread: false
+
+    Component.onCompleted: {
+        if (messenger.profileName.length === 0)
+            Qt.callLater(function() { accountSettings.open() })
+    }
+
+    Dialog {
+        id: accountSettings
+        title: "本机账号"
+        modal: true
+        anchors.centerIn: parent
+        width: Math.min(440, window.width - 24)
+        standardButtons: Dialog.Close
+        background: Rectangle { color: window.panel; radius: 16 }
+        contentItem: ColumnLayout {
+            spacing: 12
+            Label { text: "账号只保存在这台设备，不依赖第三方注册服务。"; color: window.subdued; wrapMode: Text.Wrap; Layout.fillWidth: true }
+            Label { text: "账号名称"; color: "white"; font.bold: true }
+            TextField { id: accountName; text: messenger.profileName; placeholderText: "给自己起个名字"; Layout.fillWidth: true; maximumLength: 64 }
+            Button { text: "保存账号名称"; enabled: accountName.text.trim().length > 0; Layout.fillWidth: true; onClicked: { if (messenger.setProfileName(accountName.text)) accountSettings.close() } }
+            Label { text: "本机账号 ID"; color: window.subdued; font.pixelSize: 12 }
+            Label { text: messenger.accountId.length ? messenger.accountId : "尚未创建"; color: "white"; wrapMode: Text.WrapAnywhere; Layout.fillWidth: true; font.pixelSize: 12 }
+            Label { text: "好友邀请码"; color: window.subdued; font.pixelSize: 12 }
+            Label { text: messenger.inviteCode.length ? messenger.inviteCode : "正在生成，请稍后重试"; color: "white"; wrapMode: Text.WrapAnywhere; Layout.fillWidth: true; font.pixelSize: 12 }
+            RowLayout {
+                Layout.fillWidth: true
+                Button { text: "复制邀请码"; enabled: messenger.inviteCode.length > 0; Layout.fillWidth: true; onClicked: messenger.copyInviteCode() }
+                Button { text: "重试"; Layout.fillWidth: true; onClicked: messenger.retryIdentity() }
+            }
+            Label { text: "不配置服务器时仅能尝试本地网络发现；跨互联网首次连接不能保证成功。聊天和文件不经过本应用的服务器。"; color: window.subdued; wrapMode: Text.Wrap; Layout.fillWidth: true; font.pixelSize: 12 }
+            Label { text: messenger.lastError; color: "#ff9c9c"; wrapMode: Text.Wrap; Layout.fillWidth: true; visible: messenger.lastError.length > 0 }
+        }
+    }
 
     Dialog {
         id: addFriend
@@ -111,18 +146,20 @@ ApplicationWindow {
 
     RowLayout {
         anchors.fill: parent
-        anchors.margins: 16
+        anchors.margins: window.mobile ? 8 : 16
         spacing: 14
 
         Rectangle {
-            Layout.preferredWidth: 310
+            visible: !window.mobile || !window.showThread
+            Layout.preferredWidth: window.mobile ? 0 : 310
+            Layout.fillWidth: window.mobile
             Layout.fillHeight: true
             color: Qt.rgba(0.095, 0.14, 0.22, 0.96)
             radius: 20
             ColumnLayout {
                 anchors.fill: parent
-                anchors.margins: 20
-                spacing: 18
+                anchors.margins: window.mobile ? 14 : 20
+                spacing: window.mobile ? 10 : 18
                 RowLayout {
                     Layout.fillWidth: true
                     Rectangle { width: 34; height: 34; radius: 10; color: window.accent; Label { anchors.centerIn: parent; text: "✦"; color: "#102132"; font.pixelSize: 20; font.bold: true } }
@@ -132,9 +169,10 @@ ApplicationWindow {
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#30415d" }
                 Label { text: messenger.networkStatus; color: window.subdued; font.pixelSize: 12; wrapMode: Text.Wrap; Layout.fillWidth: true }
-                Label { text: messenger.inviteCode.length ? "我的邀请码" : "正在生成本机邀请码"; color: window.subdued; font.pixelSize: 12 }
-                Label { text: messenger.inviteCode; color: "white"; font.pixelSize: 11; wrapMode: Text.WrapAnywhere; Layout.fillWidth: true; visible: messenger.inviteCode.length > 0 }
-                Button { text: "复制我的邀请码"; enabled: messenger.inviteCode.length > 0; Layout.fillWidth: true; onClicked: messenger.copyInviteCode() }
+                Button { text: messenger.profileName.length ? "账号：" + messenger.profileName : "设置本机账号"; Layout.fillWidth: true; onClicked: accountSettings.open() }
+                Label { text: messenger.inviteCode.length ? "我的邀请码" : "邀请码尚未生成"; color: window.subdued; font.pixelSize: 12; visible: !window.mobile }
+                Label { text: messenger.inviteCode; color: "white"; font.pixelSize: 11; wrapMode: Text.WrapAnywhere; Layout.fillWidth: true; visible: !window.mobile && messenger.inviteCode.length > 0 }
+                Button { text: "复制我的邀请码"; enabled: messenger.inviteCode.length > 0; Layout.fillWidth: true; visible: !window.mobile; onClicked: messenger.copyInviteCode() }
                 Label { text: messenger.lastError; color: "#ff9c9c"; font.pixelSize: 12; wrapMode: Text.Wrap; Layout.fillWidth: true; visible: messenger.lastError.length > 0 }
                 Label { text: "待处理好友申请"; color: window.accent; font.pixelSize: 12; visible: messenger.pendingRequests.length > 0 }
                 Repeater {
@@ -158,7 +196,7 @@ ApplicationWindow {
                 }
                 Button { text: "+ 添加好友"; Layout.fillWidth: true; onClicked: addFriend.open() }
                 Button { text: "新建群聊"; Layout.fillWidth: true; onClicked: createGroup.open() }
-                Button { text: "自建网络设置"; Layout.fillWidth: true; onClicked: networkSettings.open() }
+                Button { text: "自建网络设置（可选）"; Layout.fillWidth: true; onClicked: networkSettings.open() }
                 Label { text: "消息"; color: window.subdued; font.bold: true; font.pixelSize: 12 }
                 ListView {
                     Layout.fillWidth: true
@@ -169,7 +207,7 @@ ApplicationWindow {
                         required property var modelData
                         width: ListView.view.width
                         highlighted: messenger.activeContactId === modelData.id
-                        onClicked: messenger.selectContact(modelData.id)
+                        onClicked: { messenger.selectContact(modelData.id); if (window.mobile) window.showThread = true }
                         contentItem: RowLayout {
                             spacing: 10
                             Rectangle { width: 38; height: 38; radius: 19; color: "#31516a"; Label { anchors.centerIn: parent; text: modelData.initial; color: "white"; font.bold: true } }
@@ -185,6 +223,7 @@ ApplicationWindow {
         }
 
         Rectangle {
+            visible: !window.mobile || window.showThread
             Layout.fillWidth: true
             Layout.fillHeight: true
             color: Qt.rgba(0.095, 0.14, 0.22, 0.96)
@@ -195,12 +234,14 @@ ApplicationWindow {
                 spacing: 16
                 RowLayout {
                     Layout.fillWidth: true
+                    Button { text: "‹"; visible: window.mobile; onClicked: window.showThread = false }
                     ColumnLayout {
+                        Layout.fillWidth: true
                         spacing: 3
-                        Label { text: messenger.activeContactName; color: "white"; font.pixelSize: 22; font.bold: true }
+                        Label { text: messenger.activeContactName; color: "white"; font.pixelSize: window.mobile ? 18 : 22; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
                         Label { text: "端到端加密  ·  本地记录"; color: window.subdued; font.pixelSize: 12 }
                     }
-                    Label { text: "私有网络"; color: window.accent; font.bold: true }
+                    Label { text: "私有网络"; color: window.accent; font.bold: true; visible: !window.mobile }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#30415d" }
                 ListView {

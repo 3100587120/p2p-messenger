@@ -49,6 +49,7 @@ bool DaemonBridge::start()
             details["TURN.enable"] = "false";
             details["TURN.server"] = "";
             details["Account.upnpEnabled"] = "false";
+            details["Account.peerDiscovery"] = "true";
             details["RingNS.uri"] = "";
             DRing::setAccountDetails(id, details);
         }
@@ -201,6 +202,7 @@ QString DaemonBridge::createLocalIdentity(const QString& displayName)
                                        {"STUN.enable", "false"},
                                        {"TURN.enable", "false"},
                                        {"Account.upnpEnabled", "false"},
+                                       {"Account.peerDiscovery", "true"},
                                        {"RingNS.uri", ""}});
     return QString::fromStdString(id);
 #else
@@ -219,6 +221,22 @@ QString DaemonBridge::inviteCode(const QString& accountId) const
 #else
     Q_UNUSED(accountId)
     return {};
+#endif
+}
+
+bool DaemonBridge::setIdentityAlias(const QString& accountId, const QString& alias)
+{
+#ifdef P2P_MESSENGER_WITH_DAEMON
+    if (!started_ || accountId.isEmpty() || alias.trimmed().isEmpty()) return false;
+    auto details = DRing::getAccountDetails(accountId.toStdString());
+    if (details.empty()) return false;
+    details["Account.alias"] = alias.trimmed().toStdString();
+    DRing::setAccountDetails(accountId.toStdString(), details);
+    return true;
+#else
+    Q_UNUSED(accountId)
+    Q_UNUSED(alias)
+    return false;
 #endif
 }
 
@@ -442,6 +460,7 @@ bool DaemonBridge::configurePrivateNetwork(const QString& accountId, const Priva
     details["STUN.enable"] = "false";
     details["STUN.server"] = "";
     details["Account.upnpEnabled"] = "false";
+    details["Account.peerDiscovery"] = "true";
     details["RingNS.uri"] = "";
     details["TURN.enable"] = config.turnHost.isEmpty() ? "false" : "true";
     details["TURN.server"] = config.turnHost.isEmpty()

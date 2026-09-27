@@ -9,6 +9,7 @@
 #include <QStandardPaths>
 #include <QUrl>
 #include <QUuid>
+#include <QTimer>
 #ifdef Q_OS_ANDROID
 #include <QJniObject>
 #include <QtCore/qnativeinterface.h>
@@ -187,10 +188,26 @@ MessengerController::MessengerController(QObject* parent)
     } else {
         networkStatus_ = tr("通信内核未启动");
     }
+    auto* identityRefresh = new QTimer(this);
+    identityRefresh->setInterval(2000);
+    connect(identityRefresh, &QTimer::timeout, this, [this, identityRefresh] {
+        if (accountId_.isEmpty() || !inviteCode_.isEmpty()) {
+            identityRefresh->stop();
+            return;
+        }
+        const auto code = daemon_.inviteCode(accountId_);
+        if (!code.isEmpty()) {
+            inviteCode_ = code;
+            emit inviteCodeChanged();
+            identityRefresh->stop();
+        }
+    });
+    if (!accountId_.isEmpty() && inviteCode_.isEmpty()) identityRefresh->start();
     const auto savedProfile = vault_.loadConversation(QStringLiteral("__profile"));
     if (!savedProfile.isEmpty()) {
         const auto profile = savedProfile.first().toMap();
         if (profile.value(QStringLiteral("accountId")).toString() == accountId_) {
+            profileName_ = profile.value(QStringLiteral("profileName")).toString();
             contacts_ = profile.value(QStringLiteral("contacts")).toList();
             const auto network = profile.value(QStringLiteral("network")).toMap();
             networkConfig_.bootstrapNode = network.value(QStringLiteral("bootstrapNode")).toString();
@@ -228,9 +245,52 @@ QString MessengerController::activeContactId() const { return activeContactId_; 
 QString MessengerController::activeContactName() const { return contactName(activeContactId_); }
 QString MessengerController::networkStatus() const { return networkStatus_; }
 QString MessengerController::inviteCode() const { return inviteCode_; }
+QString MessengerController::accountId() const { return accountId_; }
+QString MessengerController::profileName() const { return profileName_; }
 QString MessengerController::lastError() const { return lastError_; }
 QStringList MessengerController::pendingRequests() const { return pendingRequests_; }
 QStringList MessengerController::pendingGroupRequests() const { return pendingGroupRequests_; }
+
+bool MessengerController::setProfileName(const QString& name)
+{
+    const auto trimmed = name.trimmed();
+    if (trimmed.isEmpty() || trimmed.size() > 64) {
+        setError(tr("账号名称须为 1 至 64 个字符"));
+        return false;
+    }
+    if (!daemon_.setIdentityAlias(accountId_, trimmed)) {
+        setError(tr("无法保存本机账号名称，请检查通信内核"));
+        return false;
+    }
+    profileName_ = trimmed;
+    saveProfile();
+    setError({});
+    emit profileNameChanged();
+    return true;
+}
+
+bool MessengerController::retryIdentity()
+{
+    if (accountId_.isEmpty()) {
+        if (!daemon_.start()) {
+            setError(tr("通信内核未启动，无法创建本机账号"));
+            return false;
+        }
+        accountId_ = daemon_.createLocalIdentity(profileName_.isEmpty() ? tr("我的设备") : profileName_);
+        emit accountIdChanged();
+    }
+    if (accountId_.isEmpty()) {
+        setError(tr("创建本机账号失败"));
+        return false;
+    }
+    const auto code = daemon_.inviteCode(accountId_);
+    if (!code.isEmpty() && code != inviteCode_) {
+        inviteCode_ = code;
+        emit inviteCodeChanged();
+    }
+    setError(inviteCode_.isEmpty() ? tr("账号已创建，邀请码仍在生成；请稍后重试") : QString {});
+    return !inviteCode_.isEmpty();
+}
 
 void MessengerController::selectContact(const QString& contactId)
 {
@@ -515,6 +575,7 @@ void MessengerController::saveProfile()
 {
     vault_.saveConversation(QStringLiteral("__profile"),
                             {QVariantMap {{QStringLiteral("accountId"), accountId_},
+                                          {QStringLiteral("profileName"), profileName_},
                                           {QStringLiteral("contacts"), contacts_},
                                           {QStringLiteral("network"), QVariantMap {
                                                {QStringLiteral("bootstrapNode"), networkConfig_.bootstrapNode},
