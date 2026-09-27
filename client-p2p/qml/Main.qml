@@ -28,12 +28,18 @@ ApplicationWindow {
     Component.onCompleted: {
         if (messenger.profileName.length === 0)
             Qt.callLater(function() { accountSettings.open() })
+        if (messenger.pendingRequests.length > 0)
+            Qt.callLater(function() { friendRequestDialog.open() })
     }
 
     Connections {
         target: messenger
         function onLastErrorChanged() {
             if (messenger.lastError.length > 0) failureDialog.open()
+        }
+        function onPendingRequestsChanged() {
+            if (messenger.pendingRequests.length > 0 && !friendRequestDialog.visible)
+                friendRequestDialog.open()
         }
     }
 
@@ -51,6 +57,35 @@ ApplicationWindow {
             wrapMode: Text.Wrap
             padding: 18
             font.pixelSize: 15
+        }
+    }
+
+    Dialog {
+        id: friendRequestDialog
+        title: "收到好友申请"
+        modal: true
+        anchors.centerIn: parent
+        width: Math.min(420, window.width - 32)
+        standardButtons: Dialog.Close
+        background: Rectangle { color: window.panel; radius: 18; border.color: window.accent; border.width: 1 }
+        contentItem: ColumnLayout {
+            spacing: 14
+            Label {
+                text: messenger.pendingRequests.length > 0
+                      ? "设备 " + messenger.pendingRequests[0].slice(0, 12) + "… 想添加你为好友。"
+                      : "尚未收到好友申请。请让双方都打开双点聊；跨网测试辅助连接时，两端都要开启辅助连接。"
+                color: "white"; wrapMode: Text.Wrap; Layout.fillWidth: true
+            }
+            Button {
+                text: "接受并添加好友"
+                enabled: messenger.pendingRequests.length > 0
+                Layout.fillWidth: true
+                onClicked: {
+                    if (messenger.pendingRequests.length > 0 && messenger.acceptFriendRequest(messenger.pendingRequests[0])) {
+                        if (messenger.pendingRequests.length === 0) friendRequestDialog.close()
+                    }
+                }
+            }
         }
     }
 
@@ -243,6 +278,7 @@ ApplicationWindow {
                     }
                 }
                 Button { text: "+ 添加好友"; Layout.fillWidth: true; onClicked: addFriend.open() }
+                Button { text: "查看好友申请"; Layout.fillWidth: true; onClicked: { messenger.refreshPendingRequests(); friendRequestDialog.open() } }
                 Button { text: "新建群聊"; Layout.fillWidth: true; onClicked: createGroup.open() }
                 Label { text: "消息"; color: window.subdued; font.bold: true; font.pixelSize: 12 }
                 ListView {
@@ -289,6 +325,7 @@ ApplicationWindow {
                         Label { text: "端到端加密  ·  本地记录"; color: window.subdued; font.pixelSize: 12 }
                     }
                     Button { text: "加好友"; visible: window.mobile; onClicked: addFriend.open() }
+                    Button { text: "申请 " + messenger.pendingRequests.length; visible: window.mobile; onClicked: { messenger.refreshPendingRequests(); friendRequestDialog.open() } }
                     Label { text: "私有网络"; color: window.accent; font.bold: true; visible: !window.mobile }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#30415d" }

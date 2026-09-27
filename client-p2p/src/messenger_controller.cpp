@@ -358,6 +358,10 @@ MessengerController::MessengerController(QObject* parent)
         contacts_.append(contact(QStringLiteral("welcome"), tr("开始使用"), tr("本设备")));
     if (!accountId_.isEmpty())
         pendingRequests_ = daemon_.pendingFriendRequests(accountId_);
+    pendingRefresh_ = new QTimer(this);
+    pendingRefresh_->setInterval(15000);
+    connect(pendingRefresh_, &QTimer::timeout, this, &MessengerController::refreshPendingRequests);
+    if (!accountId_.isEmpty()) pendingRefresh_->start();
     if (!accountId_.isEmpty())
         pendingGroupRequests_ = daemon_.pendingGroupRequests(accountId_);
     refreshNearbyPeers();
@@ -621,14 +625,10 @@ bool MessengerController::addContact(const QString& name, const QString& invite)
         }
     }
     if (!daemon_.addVerifiedContact(accountId_, peerCode)) {
-        setError(tr("好友申请未提交。请确认本机账号已就绪，再重新粘贴对方的配对码。"));
+        setError(tr("好友申请未提交：本机通信网络尚未就绪。请保持应用打开并联网，稍后重新发送。"));
         return false;
     }
     const auto conversationId = daemon_.createConversation(accountId_, peerCode);
-    if (conversationId.isEmpty()) {
-        setError(tr("私聊未能创建。请稍后重试；跨网使用时还需确保对方设备可直连。"));
-        return false;
-    }
     const auto id = QUuid::createUuid().toString(QUuid::WithoutBraces);
     auto entry = contact(id, trimmedName, tr("等待对方确认"));
     entry.insert(QStringLiteral("uri"), peerCode);
@@ -643,7 +643,9 @@ bool MessengerController::addContact(const QString& name, const QString& invite)
             const auto candidate = value.toMap();
             if (candidate.value(QStringLiteral("id")).toString() == id &&
                 !candidate.value(QStringLiteral("ready"), false).toBool()) {
-                setError(tr("连接尚未建立。请让对方打开双点聊并接受申请；跨网时也可能是双方网络不允许直连。"));
+                setError(assistedConnection_
+                    ? tr("申请已提交，但尚未收到对方确认。请让对方打开双点聊并保持联网；公共节点或中继不可用时也可能送达失败。")
+                    : tr("申请已提交，但尚未收到对方确认。请让对方打开双点聊；跨网纯直连可能因双方网络限制而无法送达。"));
                 break;
             }
         }
@@ -805,9 +807,13 @@ void MessengerController::copyInviteCode()
 
 bool MessengerController::acceptFriendRequest(const QString& contactUri)
 {
-    if (!pendingRequests_.contains(contactUri)) return false;
+    if (!pendingRequests_.contains(contactUri)) {
+        refreshPendingRequests();
+        setError(tr("这条好友申请已不在待处理列表中。请让对方重新发送申请。"));
+        return false;
+    }
     if (!daemon_.acceptFriendRequest(accountId_, contactUri)) {
-        setError(tr("无法接受好友申请"));
+        setError(tr("接受好友申请失败：申请可能已过期，或通信内核尚未同步。请保持联网，刷新申请后重试。"));
         return false;
     }
     pendingRequests_.removeAll(contactUri);
@@ -822,6 +828,15 @@ bool MessengerController::acceptFriendRequest(const QString& contactUri)
     emit contactsChanged();
     selectContact(id);
     return true;
+}
+
+void MessengerController::refreshPendingRequests()
+{
+    if (accountId_.isEmpty()) return;
+    const auto current = daemon_.pendingFriendRequests(accountId_);
+    if (current == pendingRequests_) return;
+    pendingRequests_ = current;
+    emit pendingRequestsChanged();
 }
 
 bool MessengerController::acceptGroupRequest(const QString& conversationId)

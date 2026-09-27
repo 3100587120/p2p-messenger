@@ -70,6 +70,7 @@ public:
     Q_INVOKABLE bool setProfileName(const QString& name);
     Q_INVOKABLE bool retryIdentity();
     Q_INVOKABLE bool acceptFriendRequest(const QString& contactUri);
+    Q_INVOKABLE void refreshPendingRequests();
     Q_INVOKABLE bool acceptGroupRequest(const QString& conversationId);
     Q_INVOKABLE bool configureNetwork(const QString& rendezvous);
     Q_INVOKABLE bool setAssistedConnection(bool enabled);
@@ -103,6 +104,7 @@ private:
     QString mappedEndpoint_;
     int listeningPort_ {0};
     QTimer* identityRefresh_ {nullptr};
+    QTimer* pendingRefresh_ {nullptr};
     QVariantList nearbyPeers_;
     QString lastError_;
     QStringList pendingRequests_;

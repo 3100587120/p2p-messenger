@@ -313,8 +313,14 @@ bool DaemonBridge::addVerifiedContact(const QString& accountId, const QString& c
 #ifdef P2P_MESSENGER_WITH_DAEMON
     if (!started_ || accountId.isEmpty() || contactUri.isEmpty())
         return false;
+    const auto state = DRing::getVolatileAccountDetails(accountId.toStdString());
+    const auto registration = state.find("Account.registrationStatus");
+    if (registration == state.end() || registration->second != "REGISTERED")
+        return false;
     DRing::sendTrustRequest(accountId.toStdString(), contactUri.toStdString());
-    return !createConversation(accountId, contactUri).isEmpty();
+    // Jami creates the one-to-one conversation asynchronously. An empty
+    // conversation list here does not mean the request failed to submit.
+    return true;
 #else
     Q_UNUSED(accountId)
     Q_UNUSED(contactUri)
