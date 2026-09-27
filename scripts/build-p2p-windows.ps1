@@ -1,4 +1,4 @@
-param([switch]$SkipDeploy, [switch]$BuildE2E)
+param([switch]$SkipDeploy, [switch]$BuildE2E, [switch]$BuildRelayTests)
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
@@ -58,6 +58,7 @@ $configureArgs = @(
     '-DP2P_MESSENGER_WITH_DAEMON=ON',
     '-DCMAKE_AUTOGEN_PARALLEL=1',
     "-DP2P_MESSENGER_BUILD_DAEMON_E2E=$($BuildE2E.IsPresent.ToString().ToUpperInvariant())",
+    "-DP2P_MESSENGER_BUILD_RELAY_TESTS=$($BuildRelayTests.IsPresent.ToString().ToUpperInvariant())",
     "-DP2P_MESSENGER_DAEMON_INCLUDE_DIR=$($daemonRoot.Replace('\', '/'))/src",
     "-DP2P_MESSENGER_DAEMON_LIBRARY=$($daemonRoot.Replace('\', '/'))/build/x64/ReleaseLib_win32/bin/jami.lib"
 )
@@ -66,6 +67,10 @@ Invoke-CMake $configureArgs
 Invoke-CMake @('--build', $buildRoot, '--config', 'Release', '--target', 'P2PMessenger', '--parallel', '1', '--', '/nr:false')
 if ($BuildE2E) {
     Invoke-CMake @('--build', $buildRoot, '--config', 'Release', '--target', 'P2PMessengerDaemonE2E', '--parallel', '1', '--', '/nr:false')
+}
+if ($BuildRelayTests) {
+    Invoke-CMake @('--build', $buildRoot, '--config', 'Release', '--target', 'P2PMessengerRelayCryptoTest', '--parallel', '1', '--', '/nr:false')
+    Invoke-CMake @('--build', $buildRoot, '--config', 'Release', '--target', 'P2PMessengerRelayClientTest', '--parallel', '1', '--', '/nr:false')
 }
 
 if (-not $SkipDeploy) {

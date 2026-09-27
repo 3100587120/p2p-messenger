@@ -9,6 +9,7 @@
 #include "gateway_mapper.h"
 #include "local_vault.h"
 #include "private_network_config.h"
+#include "relay_client.h"
 
 class QTimer;
 
@@ -111,17 +112,21 @@ private:
     QStringList pendingGroupRequests_;
     PrivateNetworkConfig networkConfig_;
     bool assistedConnection_ {false};
+    QVariantMap pendingRelayRequests_;
+    QVariantMap pendingRelayGroups_;
+    QVariantMap incomingRelayFiles_;
     DaemonBridge daemon_;
     GatewayMapper gatewayMapper_;
     LocalVault vault_;
+    RelayClient relay_;
     QHash<QString, QString> androidDownloadDestinations_;
     QHash<QString, QString> androidDownloadPaths_;
 
     void appendMessage(const QString& body, bool outgoing, const QString& kind = QStringLiteral("text"));
     void appendMessageForContact(const QString& contactId, const QString& body, bool outgoing,
                                  const QString& kind = QStringLiteral("text"));
-    void storeMessageForContact(const QString& contactId, const QVariantMap& message);
-    void saveProfile();
+    bool storeMessageForContact(const QString& contactId, const QVariantMap& message);
+    bool saveProfile();
     void setError(const QString& error);
     QString contactName(const QString& id) const;
 };

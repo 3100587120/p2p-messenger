@@ -4,13 +4,14 @@ project(P2PMessenger VERSION 0.1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Quick QuickControls2 Network)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Quick QuickControls2 Network WebSockets)
 if(NOT WIN32 AND NOT ANDROID)
     find_package(OpenSSL REQUIRED)
 endif()
 
 option(P2P_MESSENGER_WITH_DAEMON "Link the private Jami daemon engine" ON)
 option(P2P_MESSENGER_BUILD_DAEMON_E2E "Build a local two-identity daemon integration test" OFF)
+option(P2P_MESSENGER_BUILD_RELAY_TESTS "Build relay encryption tests" OFF)
 set(P2P_MESSENGER_DAEMON_INCLUDE_DIR "" CACHE PATH "Directory containing jami/jami.h")
 set(P2P_MESSENGER_DAEMON_LIBRARY "" CACHE FILEPATH "Private daemon library")
 
@@ -26,6 +27,10 @@ qt_add_executable(P2PMessenger
     src/gateway_mapper.h
     src/local_vault.cpp
     src/local_vault.h
+    src/relay_crypto.cpp
+    src/relay_crypto.h
+    src/relay_client.cpp
+    src/relay_client.h
     src/private_network_config.cpp
     src/private_network_config.h
 )
@@ -37,7 +42,7 @@ qt_add_qml_module(P2PMessenger
         qml/Main.qml
 )
 
-target_link_libraries(P2PMessenger PRIVATE Qt6::Quick Qt6::QuickControls2 Qt6::Network)
+target_link_libraries(P2PMessenger PRIVATE Qt6::Quick Qt6::QuickControls2 Qt6::Network Qt6::WebSockets)
 
 if(NOT WIN32 AND NOT ANDROID)
     target_link_libraries(P2PMessenger PRIVATE OpenSSL::Crypto)
@@ -72,11 +77,15 @@ if(P2P_MESSENGER_WITH_DAEMON)
             "${_daemon_root}/contrib/aarch64-linux-android/include")
         set_property(TARGET P2PMessenger APPEND PROPERTY QT_ANDROID_EXTRA_LIBS
             "${P2P_MESSENGER_DAEMON_LIBRARY}")
+        target_link_libraries(P2PMessenger PRIVATE
+            "${_daemon_root}/contrib/aarch64-linux-android/lib/libcrypto.a")
     endif()
     if(WIN32)
         get_filename_component(_daemon_root "${P2P_MESSENGER_DAEMON_INCLUDE_DIR}" DIRECTORY)
         set(_contrib "${_daemon_root}/contrib")
-        target_include_directories(P2PMessenger PRIVATE "${_contrib}/msvc/include")
+        target_include_directories(P2PMessenger PRIVATE
+            "${_contrib}/msvc/include"
+            "${_contrib}/build/openssl/include")
         target_link_directories(P2PMessenger PRIVATE "${_contrib}/msvc/lib/x64")
         target_link_libraries(P2PMessenger PRIVATE
             "${_contrib}/build/ffmpeg/Build/win32/x64/bin/avcodec.lib"
@@ -149,4 +158,26 @@ if(P2P_MESSENGER_BUILD_DAEMON_E2E)
     target_compile_definitions(P2PMessengerGatewayTest PRIVATE P2P_MESSENGER_GATEWAY_TESTING=1)
     target_include_directories(P2PMessengerGatewayTest PRIVATE src)
     target_link_libraries(P2PMessengerGatewayTest PRIVATE Qt6::Network)
+endif()
+
+if(P2P_MESSENGER_BUILD_RELAY_TESTS AND WIN32)
+    add_executable(P2PMessengerRelayCryptoTest
+        tests/relay_crypto_test.cpp
+        src/relay_crypto.cpp src/relay_crypto.h
+        src/local_vault.cpp src/local_vault.h)
+    target_include_directories(P2PMessengerRelayCryptoTest PRIVATE
+        src "${_contrib}/build/openssl/include")
+    target_link_libraries(P2PMessengerRelayCryptoTest PRIVATE
+        Qt6::Core crypt32 bcrypt "${_contrib}/build/openssl/libcrypto.lib")
+
+    add_executable(P2PMessengerRelayClientTest
+        tests/relay_client_test.cpp
+        src/relay_client.cpp src/relay_client.h
+        src/relay_crypto.cpp src/relay_crypto.h
+        src/local_vault.cpp src/local_vault.h)
+    target_include_directories(P2PMessengerRelayClientTest PRIVATE
+        src "${_contrib}/build/openssl/include")
+    target_link_libraries(P2PMessengerRelayClientTest PRIVATE
+        Qt6::Core Qt6::Network Qt6::WebSockets crypt32 bcrypt
+        "${_contrib}/build/openssl/libcrypto.lib")
 endif()

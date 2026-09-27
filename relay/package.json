@@ -1,0 +1,13 @@
+{
+  "name": "shuangdianliao-relay",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --local",
+    "deploy": "wrangler deploy",
+    "test": "node test/router.test.js"
+  },
+  "devDependencies": {
+    "wrangler": "^4.45.0"
+  }
+}

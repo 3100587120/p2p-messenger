@@ -13,6 +13,7 @@ public:
     bool isReady() const;
     QString error() const;
     QVariantList loadConversation(const QString& conversationId) const;
+    bool hasConversation(const QString& conversationId) const;
     bool saveConversation(const QString& conversationId, const QVariantList& messages);
 
 private:

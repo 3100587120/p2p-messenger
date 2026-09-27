@@ -1,10 +1,8 @@
 # 双点聊 client
 
-Original Qt Quick interface over an embedded Jami engine. It creates a local
-identity, handles trust-based friend requests, private and group conversations,
-and peer-to-peer file offers. The interface does not load remote assets. Its
-default connection mode does not contact a public service; the opt-in assisted
-mode does.
+Qt Quick interface over an embedded Jami engine, with a separate opt-in
+encrypted Cloudflare relay transport. The interface does not load remote
+assets. Strict Direct is the default and does not contact a public service.
 
 ## Windows build and verification
 
@@ -68,22 +66,31 @@ checks remain required before release; strict direct mode never uses TURN.
 
 ## Connection modes and two-device pairing
 
-The default is Strict Direct. It never uses public bootstrap, proxy, STUN,
-name, or TURN services. The account settings allow switching to Assisted
-Connection, and the selection is saved locally. Only in Assisted mode does
-the engine join Jami's public DHT via `bootstrap.jami.net:4222` and enable
-`turn.jami.net` with the credentials documented by Jami. Public DHT nodes
-can carry encrypted rendezvous/messages; TURN is a fallback relay for file
-transfers when a direct path fails. These third parties can observe connection
-metadata, not plaintext content. Switching back clears all public endpoints
-and TURN settings. Neither mode sends account history to a cloud database.
+The default is Strict Direct. It does not use public bootstrap, proxy, STUN,
+name, or TURN services. Assisted Connection uses the separately deployed
+Cloudflare Worker under the user's account, not Jami's public DHT/TURN. Both
+devices must opt in and exchange new `SD1-` public-key pairing codes. The
+Worker forwards encrypted packets only while the recipient is online; it
+stores no message history. Unacknowledged packets are encrypted and queued on
+the sender's device, then retried when it reconnects. "Delivered" is shown
+only after an authenticated acknowledgement from the recipient device.
+The relay can see connection metadata, but not message or file plaintext.
+It is a third-party service in Assisted mode; switching back disables its
+WebSocket connection. Jami is configured without public DHT/TURN endpoints
+in both modes.
+
+Set `P2P_MESSENGER_RELAY_URL` to the deployed `wss://...workers.dev` endpoint
+before launching the current development build. Without a deployed endpoint,
+Assisted mode cannot be enabled. The Worker source and tests are in `relay/`.
+It supports friend requests, private messages, group invitations/messages,
+and private file transfers up to 2 MB. Files and chat history remain in the
+local vault; the Worker does not provide offline cloud storage. This transport
+has passed local protocol tests, but not a physical two-network acceptance
+test. Do not present it as WAN-validated yet.
 
 The upstream [Jami LAN guide](https://docs.jami.net/en_US/user/lan-only.html)
-explains bootstrap/DHT/TURN behavior, and its
-[TURN guide](https://docs.jami.net/en_US/developer/going-further/setting-up-your-own-turn-server.html)
-documents the public relay settings. Windows and Android test packages have
-been built, but the mode switch has not yet been verified across real WANs;
-do not treat these test packages as a validated release.
+explains the direct-mode topology. Existing packages in `dist/` predate this
+transport; do not treat them as validated relay releases.
 
 The Add Friend dialog lists nearby LAN accounts for one-tap adding
 and accepts a pairing code from another network. Share My Pairing Code

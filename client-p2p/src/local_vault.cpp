@@ -55,7 +55,14 @@ QByteArray cngCrypt(bool encrypting, const QByteArray& key, const QByteArray& no
     BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO info;
     BCRYPT_INIT_AUTH_MODE_INFO(info);
     info.pbNonce = reinterpret_cast<PUCHAR>(const_cast<char*>(nonce.constData())); info.cbNonce = nonce.size();
-    QByteArray localTag(tagSize, Qt::Uninitialized); info.pbTag = reinterpret_cast<PUCHAR>(localTag.data()); info.cbTag = localTag.size();
+    // Decryption must use the stored authentication tag. The previous code
+    // allocated an uninitialized replacement, so every Windows vault read
+    // failed authentication and identities/history appeared to disappear.
+    QByteArray localTag = encrypting ? QByteArray(tagSize, Qt::Uninitialized) : *tag;
+    if (localTag.size() != tagSize) {
+        BCryptDestroyKey(handle); BCryptCloseAlgorithmProvider(algorithm, 0); return {};
+    }
+    info.pbTag = reinterpret_cast<PUCHAR>(localTag.data()); info.cbTag = localTag.size();
     QByteArray output(input.size(), Qt::Uninitialized); ULONG written = 0;
     const auto status = encrypting
         ? BCryptEncrypt(handle, reinterpret_cast<PUCHAR>(const_cast<char*>(input.constData())), input.size(), &info, nullptr, 0,
@@ -293,6 +300,11 @@ QVariantList LocalVault::loadConversation(const QString& conversationId) const
     const auto plain = decrypt(input.readAll());
     const auto document = QJsonDocument::fromJson(plain);
     return document.isArray() ? document.array().toVariantList() : QVariantList {};
+}
+
+bool LocalVault::hasConversation(const QString& conversationId) const
+{
+    return QFile::exists(conversationPath(conversationId));
 }
 
 bool LocalVault::saveConversation(const QString& conversationId, const QVariantList& messages)

@@ -91,14 +91,14 @@ ApplicationWindow {
 
     Dialog {
         id: requestSubmittedDialog
-        title: "好友申请已提交"
+        title: "好友申请已排队"
         modal: true
         anchors.centerIn: parent
         width: Math.min(420, window.width - 32)
         standardButtons: Dialog.Ok
         background: Rectangle { color: window.panel; radius: 18 }
         contentItem: Label {
-            text: "申请已从本机提交，尚不能确认对方收到。请让对方保持应用打开并查看好友申请；跨网时双方都需开启辅助连接。"
+            text: "申请已加密并保存在本机发送队列。只有联系人状态显示“对方已收到申请”，才代表对方设备确认送达。跨网时双方都需开启辅助连接并保持在线。"
             color: "white"; wrapMode: Text.Wrap; padding: 18
         }
     }
@@ -123,7 +123,7 @@ ApplicationWindow {
             Label { text: "账号名称"; color: "white"; font.bold: true }
             TextField { id: accountName; text: messenger.profileName; placeholderText: "给自己起个名字"; Layout.fillWidth: true; maximumLength: 64 }
             Button { text: "保存账号名称"; enabled: accountName.text.trim().length > 0; Layout.fillWidth: true; onClicked: { if (messenger.setProfileName(accountName.text)) accountSettings.close() } }
-            Label { text: "我的设备码"; color: window.subdued; font.pixelSize: 12 }
+            Label { text: messenger.assistedConnection ? "我的辅助连接配对码" : "我的直连设备码"; color: window.subdued; font.pixelSize: 12 }
             Label { text: messenger.inviteCode.length ? messenger.inviteCode : "正在生成，请稍后重试"; color: "white"; wrapMode: Text.WrapAnywhere; Layout.fillWidth: true; font.pixelSize: 12 }
             RowLayout {
                 Layout.fillWidth: true
@@ -139,7 +139,7 @@ ApplicationWindow {
             }
             Label {
                 text: messenger.assistedConnection
-                      ? "已允许使用 Jami 公共 DHT 代理寻找对方；直连不通时可尝试 TURN 中继。消息和文件仍端到端加密，但公共服务会看到连接元数据；服务不可用时也可能连接失败。"
+                      ? "通过你的 Cloudflare 中继转发端到端加密内容；中继可见通信时间和对象，但看不到消息与文件明文。对方收到后才显示送达。"
                       : "默认模式：不连接公共引导或中继。跨网连接取决于双方网络是否允许直连；失败时可自行切换辅助连接。"
                 color: window.subdued; wrapMode: Text.Wrap; Layout.fillWidth: true; font.pixelSize: 12
             }
@@ -170,7 +170,7 @@ ApplicationWindow {
             id: addFriendContent
             width: addFriendScroll.availableWidth
             spacing: 14
-            Label { text: "同一 Wi-Fi 可点选附近设备；不在一起时，请对方发来配对码。"; wrapMode: Text.Wrap; color: window.subdued; Layout.fillWidth: true }
+            Label { text: messenger.assistedConnection ? "异网添加好友：双方切到辅助连接，复制新的 SD1 配对码。" : "同一 Wi-Fi 可点选附近设备；不在一起时，请对方发来直连配对码。"; wrapMode: Text.Wrap; color: window.subdued; Layout.fillWidth: true }
             Label { text: "附近设备"; color: window.accent; font.bold: true; Layout.fillWidth: true }
             Repeater {
                 model: messenger.nearbyPeers
@@ -205,7 +205,7 @@ ApplicationWindow {
         background: Rectangle { color: window.panel; radius: 16 }
         contentItem: ColumnLayout {
             spacing: 14
-            Label { text: "输入群名称，并粘贴成员已验证的邀请码（每行一个）。"; wrapMode: Text.Wrap; color: window.subdued; Layout.fillWidth: true }
+            Label { text: messenger.assistedConnection ? "输入群名称，粘贴成员的 SD1 配对码（每行一个）。" : "输入群名称，并粘贴成员已验证的邀请码（每行一个）。"; wrapMode: Text.Wrap; color: window.subdued; Layout.fillWidth: true }
             TextField { id: groupName; placeholderText: "群名称"; Layout.fillWidth: true }
             TextArea { id: groupMembers; placeholderText: "成员邀请码"; wrapMode: Text.Wrap; Layout.fillWidth: true; Layout.preferredHeight: 130 }
             Button {
@@ -366,6 +366,7 @@ ApplicationWindow {
                                 anchors.margins: 13
                                 spacing: 8
                                 Label { id: messageText; Layout.fillWidth: true; text: modelData.body; color: "white"; wrapMode: Text.Wrap; font.pixelSize: 15 }
+                                Label { Layout.fillWidth: true; visible: !!modelData.delivery; text: modelData.delivery || ""; color: window.subdued; font.pixelSize: 11; horizontalAlignment: Text.AlignRight }
                                 Button {
                                     text: "保存文件"
                                     visible: modelData.kind === "file-offer" && !modelData.body.includes("已完成")
