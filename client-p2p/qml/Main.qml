@@ -82,12 +82,24 @@ ApplicationWindow {
                 Button { text: "重试"; Layout.fillWidth: true; onClicked: messenger.retryIdentity() }
             }
             Button { text: "复制我的配对码"; Layout.fillWidth: true; onClicked: { if (messenger.copyLocalPairingCode()) directAddress.text = messenger.directEndpoint } }
+            Label { text: "连接方式"; color: "white"; font.bold: true; Layout.fillWidth: true }
+            Button {
+                text: messenger.assistedConnection ? "✓ 辅助连接（点此切回纯直连）" : "✓ 纯直连（点此切换辅助连接）"
+                Layout.fillWidth: true
+                onClicked: messenger.setAssistedConnection(!messenger.assistedConnection)
+            }
+            Label {
+                text: messenger.assistedConnection
+                      ? "已允许使用 Jami 公共节点寻找对方；直连不通时可尝试 TURN 中继。消息和文件仍端到端加密，但公共服务会看到连接元数据；服务不可用时也可能连接失败。"
+                      : "默认模式：不连接公共引导或中继。跨网连接取决于双方网络是否允许直连；失败时可自行切换辅助连接。"
+                color: window.subdued; wrapMode: Text.Wrap; Layout.fillWidth: true; font.pixelSize: 12
+            }
             CheckBox { id: advancedNetwork; text: "高级网络设置"; Layout.fillWidth: true }
             Label { text: "本机账号 ID：" + messenger.accountId; color: window.subdued; wrapMode: Text.WrapAnywhere; Layout.fillWidth: true; font.pixelSize: 12; visible: advancedNetwork.checked }
             Label { text: "监听端口：" + (messenger.listeningPort > 0 ? messenger.listeningPort : "尚未就绪"); color: window.subdued; Layout.fillWidth: true; font.pixelSize: 12; visible: advancedNetwork.checked }
             TextField { id: directAddress; text: messenger.directEndpoint; placeholderText: "可达 IP:端口"; Layout.fillWidth: true; visible: advancedNetwork.checked }
             Button { text: "保存手动直连地址"; Layout.fillWidth: true; visible: advancedNetwork.checked; onClicked: messenger.setDirectEndpoint(directAddress.text) }
-            Label { text: "只尝试设备直连，不使用第三方引导或中继。跨网自动地址若不可达，请在这里填写公网 IPv6 或已映射的端口。"; color: window.subdued; wrapMode: Text.Wrap; Layout.fillWidth: true; font.pixelSize: 12; visible: advancedNetwork.checked }
+            Label { text: "纯直连模式下，跨网自动地址若不可达，可在这里填写公网 IPv6 或已映射的端口。"; color: window.subdued; wrapMode: Text.Wrap; Layout.fillWidth: true; font.pixelSize: 12; visible: advancedNetwork.checked }
             }
         }
     }

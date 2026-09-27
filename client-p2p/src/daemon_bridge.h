@@ -38,7 +38,8 @@ public:
     bool sendFile(const QString& accountId, const QString& conversationId, const QString& path);
     bool downloadFile(const QString& accountId, const QString& conversationId,
                       const QString& interactionId, const QString& fileId, const QString& path);
-    bool configurePrivateNetwork(const QString& accountId, const PrivateNetworkConfig& config);
+    bool configurePrivateNetwork(const QString& accountId, const PrivateNetworkConfig& config,
+                                 bool assisted);
 
 signals:
     void incomingMessage(const QString& conversationId, const QString& body,

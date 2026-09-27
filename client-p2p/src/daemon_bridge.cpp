@@ -49,6 +49,9 @@ bool DaemonBridge::start()
             details["STUN.server"] = "";
             details["TURN.enable"] = "false";
             details["TURN.server"] = "";
+            details["TURN.username"] = "";
+            details["TURN.password"] = "";
+            details["TURN.realm"] = "";
             // UPnP talks only to the local gateway and helps direct file sessions.
             details["Account.upnpEnabled"] = "true";
 #if defined(Q_OS_WIN)
@@ -221,6 +224,10 @@ QString DaemonBridge::createLocalIdentity(const QString& displayName)
                                        {"Account.proxyEnabled", "false"},
                                        {"STUN.enable", "false"},
                                        {"TURN.enable", "false"},
+                                       {"TURN.server", ""},
+                                       {"TURN.username", ""},
+                                       {"TURN.password", ""},
+                                       {"TURN.realm", ""},
                                        {"Account.upnpEnabled", "true"},
 #if defined(Q_OS_WIN)
                                        {"DHT.port", "4222"},
@@ -507,13 +514,33 @@ bool DaemonBridge::downloadFile(const QString& accountId, const QString& convers
 #endif
 }
 
-bool DaemonBridge::configurePrivateNetwork(const QString& accountId, const PrivateNetworkConfig& config)
+bool DaemonBridge::configurePrivateNetwork(const QString& accountId, const PrivateNetworkConfig& config,
+                                           bool assisted)
 {
 #ifdef P2P_MESSENGER_WITH_DAEMON
     QString reason;
     if (!started_ || !config.isValid(&reason) || accountId.isEmpty()) return false;
     auto details = DRing::getAccountDetails(accountId.toStdString());
-    details["Account.hostname"] = config.bootstrapNode.toStdString();
+    if (details.empty()) return false;
+    // Dropping from assisted mode must also close any already-established TURN
+    // transports. Both Jami engines tear down connections when an account is
+    // disabled; a plain settings reload intentionally keeps them alive.
+    const bool closeAssistedConnections = !assisted && details["TURN.enable"] == "true" &&
+                                          details["Account.enable"] != "false";
+    if (closeAssistedConnections) {
+        auto disabled = details;
+        disabled["Account.enable"] = "false";
+        DRing::setAccountDetails(accountId.toStdString(), disabled);
+        details["Account.enable"] = "true";
+    }
+    // The public endpoints are opt-in. The explicit port also avoids the old
+    // engine's migration guard that strips the bare upstream bootstrap host.
+    auto bootstrap = config.bootstrapNode;
+    if (assisted) {
+        if (!bootstrap.isEmpty()) bootstrap += QLatin1Char(';');
+        bootstrap += QStringLiteral("bootstrap.jami.net:4222");
+    }
+    details["Account.hostname"] = bootstrap.toStdString();
     details["Account.bootstrapListUrl"] = "";
     details["Account.dhtProxyListUrl"] = "";
     details["Account.proxyEnabled"] = "false";
@@ -525,14 +552,20 @@ bool DaemonBridge::configurePrivateNetwork(const QString& accountId, const Priva
     details["Account.accountDiscovery"] = "true";
     details["Account.accountPublish"] = "true";
     details["RingNS.uri"] = "";
-    // Strict direct mode: never use a relay, even if an older profile stored one.
-    details["TURN.enable"] = "false";
-    details["TURN.server"] = "";
-    details["TURN.username"] = "";
-    details["TURN.password"] = "";
+    // Jami's documented public TURN credentials are used only after the user
+    // explicitly selects assisted mode. Direct mode clears every relay field.
+    details["TURN.enable"] = assisted ? "true" : "false";
+    details["TURN.server"] = assisted ? "turn.jami.net" : "";
+    details["TURN.username"] = assisted ? "ring" : "";
+    details["TURN.password"] = assisted ? "ring" : "";
+    details["TURN.realm"] = assisted ? "ring" : "";
     DRing::setAccountDetails(accountId.toStdString(), details);
-    return true;
+    const auto applied = DRing::getAccountDetails(accountId.toStdString());
+    const auto host = applied.find("Account.hostname");
+    const auto turn = applied.find("TURN.enable");
+    return host != applied.end() && host->second == bootstrap.toStdString() &&
+           turn != applied.end() && turn->second == (assisted ? "true" : "false");
 #else
-    Q_UNUSED(accountId); Q_UNUSED(config); return false;
+    Q_UNUSED(accountId); Q_UNUSED(config); Q_UNUSED(assisted); return false;
 #endif
 }

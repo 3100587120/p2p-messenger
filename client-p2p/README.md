@@ -2,8 +2,9 @@
 
 Original Qt Quick interface over an embedded Jami engine. It creates a local
 identity, handles trust-based friend requests, private and group conversations,
-and peer-to-peer file offers. The interface does not load remote assets or
-contact an upstream service.
+and peer-to-peer file offers. The interface does not load remote assets. Its
+default connection mode does not contact a public service; the opt-in assisted
+mode does.
 
 ## Windows build and verification
 
@@ -15,8 +16,8 @@ and the tools under `D:\p2p-messenger\work`. From PowerShell:
 ```
 
 The executable is `work/client-msvc/Release/P2PMessenger.exe`; the portable
-package is `dist/ShuangDianLiao-Windows-Direct.zip` and starts with
-`双点聊.exe`. The executable embeds the new icon. The build script deploys Qt
+current test package is `dist/ShuangDianLiao-Windows-Modes-Test.zip` and starts
+with `双点聊.exe`. The executable embeds the new icon. The build script deploys Qt
 and runtime DLLs into the release directory unless `-SkipDeploy` is used. To run the
 integration test, start a self-hosted OpenDHT node on UDP 4222 with no public
 bootstrap (`dhtnode -d -p 4222`), then run:
@@ -53,17 +54,36 @@ the native contrib once, then use:
 
 The incremental script rebuilds only changed native objects and creates an
 installable, debug-signed APK at
-`dist/ShuangDianLiao-Android-arm64-Direct-debug.apk` after copying the Qt
+`dist/ShuangDianLiao-Android-arm64-Modes-Test-debug.apk` after copying the Qt
 package from `work/client-p2p-android-debug/android-build/P2PMessenger.apk`.
 It keeps Gradle's
-cache on D:. A debug signature is for testing, not store distribution.
+cache on D:. A debug signature is for testing, not store distribution. The
+two-mode test APK passed APK signature verification and contains the embedded
+Jami engine, but has not been installed on a physical Android device.
 
 The Android build has passed compilation, APK packaging, signature validation,
 and inspection confirming that `libjami-core.so` is in the APK. No Android
 device was connected for launch or two-device messaging tests. Those runtime
 checks remain required before release; strict direct mode never uses TURN.
 
-## Strict two-device pairing
+## Connection modes and two-device pairing
+
+The default is Strict Direct. It never uses public bootstrap, proxy, STUN,
+name, or TURN services. The account settings allow switching to Assisted
+Connection, and the selection is saved locally. Only in Assisted mode does
+the engine join Jami's public DHT via `bootstrap.jami.net:4222` and enable
+`turn.jami.net` with the credentials documented by Jami. Public DHT nodes
+can carry encrypted rendezvous/messages; TURN is a fallback relay for file
+transfers when a direct path fails. These third parties can observe connection
+metadata, not plaintext content. Switching back clears all public endpoints
+and TURN settings. Neither mode sends account history to a cloud database.
+
+The upstream [Jami LAN guide](https://docs.jami.net/en_US/user/lan-only.html)
+explains bootstrap/DHT/TURN behavior, and its
+[TURN guide](https://docs.jami.net/en_US/developer/going-further/setting-up-your-own-turn-server.html)
+documents the public relay settings. Windows and Android test packages have
+been built, but the mode switch has not yet been verified across real WANs;
+do not treat these test packages as a validated release.
 
 The single Connect Device dialog lists nearby LAN accounts for one-tap adding
 and accepts a pairing code from another network. Share My Pairing Code
@@ -71,8 +91,9 @@ automatically includes up to two globally addressed IPv6 endpoints and a
 private IPv4 endpoint when available. The other device can paste it without
 entering a name or address manually. Action failures appear in a modal dialog
 with a suggested next step; an unconfirmed connection prompts after one minute.
-The app uses the peer as its DHT entry point, not a hosted service. There is
-no TURN relay. On the same LAN, the Jami ID alone can use local peer discovery.
+In Strict Direct mode, the app uses the peer as its DHT entry point, not a
+hosted service. There is no TURN relay. On the same LAN, the Jami ID alone can
+use local peer discovery.
 The suggested endpoints use the actual bound DHT port. Across networks, the
 client first tries local-router UPnP IGD (SSDP discovery, external-address
 query, a one-hour UDP port mapping with renewal). It only talks to a private
@@ -98,5 +119,5 @@ The Qt-side chat cache is AES-GCM encrypted with a device-protected key. The
 embedded Jami engine also keeps its own local Git conversation repository,
 which is not yet encrypted at rest. Do not describe the full local history as
 encrypted until that store is protected and audited. If both devices are
-behind restrictive NATs, connection failure is expected rather than silently
-using a third-party relay.
+behind restrictive NATs, Strict Direct may fail, but never silently switches
+to a third-party relay. The user can explicitly select Assisted Connection.

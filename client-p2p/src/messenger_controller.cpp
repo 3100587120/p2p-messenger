@@ -214,6 +214,11 @@ MessengerController::MessengerController(QObject* parent)
             });
     connect(&gatewayMapper_, &GatewayMapper::statusChanged, this,
             [this](const QString& status) {
+                if (assistedConnection_) {
+                    networkStatus_ = tr("辅助连接已开启 — 可使用公共引导和中继");
+                    emit networkStatusChanged();
+                    return;
+                }
                 bool ipv6Available = false;
                 for (const auto& address : QNetworkInterface::allAddresses()) {
                     if (usableGlobalIPv6(address)) { ipv6Available = true; break; }
@@ -325,6 +330,7 @@ MessengerController::MessengerController(QObject* parent)
             directEndpoint_ = numericEndpointList(profile.value(QStringLiteral("directEndpoint")).toString());
             contacts_ = profile.value(QStringLiteral("contacts")).toList();
             const auto network = profile.value(QStringLiteral("network")).toMap();
+            assistedConnection_ = network.value(QStringLiteral("assistedConnection"), false).toBool();
             QStringList verifiedNodes;
             for (const auto& savedNode : network.value(QStringLiteral("bootstrapNode")).toString()
                                              .split(QLatin1Char(';'), Qt::SkipEmptyParts)) {
@@ -342,9 +348,9 @@ MessengerController::MessengerController(QObject* parent)
         }
     }
     if (!accountId_.isEmpty() && networkConfig_.isValid()) {
-        daemon_.configurePrivateNetwork(accountId_, networkConfig_);
-        if (!networkConfig_.isEmpty())
-            networkStatus_ = tr("仅连接已配对设备 — 不使用中继");
+        daemon_.configurePrivateNetwork(accountId_, networkConfig_, assistedConnection_);
+        networkStatus_ = assistedConnection_ ? tr("辅助连接已开启 — 可使用公共引导和中继")
+                                             : tr("纯直连 — 不使用公共引导或中继");
     }
     if (!accountId_.isEmpty() && !profileName_.isEmpty())
         daemon_.setIdentityAlias(accountId_, profileName_);
@@ -398,6 +404,7 @@ QString MessengerController::pairingCode() const
 QString MessengerController::lastError() const { return lastError_; }
 QStringList MessengerController::pendingRequests() const { return pendingRequests_; }
 QStringList MessengerController::pendingGroupRequests() const { return pendingGroupRequests_; }
+bool MessengerController::assistedConnection() const { return assistedConnection_; }
 
 bool MessengerController::setProfileName(const QString& name)
 {
@@ -496,12 +503,27 @@ void MessengerController::copyPairingCode()
 
 bool MessengerController::copyLocalPairingCode()
 {
+    if (assistedConnection_) {
+        if (inviteCode_.isEmpty()) {
+            setError(tr("本机设备码仍在生成，请稍后重试。"));
+            return false;
+        }
+        QGuiApplication::clipboard()->setText(inviteCode_);
+        setError({});
+        return true;
+    }
     if (gatewayMapper_.busy() && mappedEndpoint_.isEmpty()) {
         setError(tr("正在向本地路由器申请跨网直连地址，请稍后再试。"));
         return false;
     }
     if (!useLocalNetworkAddress() || pairingCode().isEmpty()) return false;
     copyPairingCode();
+    bool hasGlobalIPv6 = false;
+    for (const auto& address : QNetworkInterface::allAddresses()) {
+        if (usableGlobalIPv6(address)) { hasGlobalIPv6 = true; break; }
+    }
+    if (mappedEndpoint_.isEmpty() && !hasGlobalIPv6)
+        setError(tr("配对码已复制，但当前网络只有局域网地址，无法用于跨网直连。软件会在网络条件允许时自动尝试直连。"));
     return true;
 }
 
@@ -580,12 +602,13 @@ bool MessengerController::addContact(const QString& name, const QString& invite)
         directConfig.turnHost.clear();
         directConfig.turnUser.clear();
         directConfig.turnPassword.clear();
-        if (!daemon_.configurePrivateNetwork(accountId_, directConfig)) {
+        if (!daemon_.configurePrivateNetwork(accountId_, directConfig, assistedConnection_)) {
             setError(tr("无法保存对方的直连地址。请重启应用后重新粘贴配对码。"));
             return false;
         }
         networkConfig_ = directConfig;
-        networkStatus_ = tr("已配置 %1 台直连设备 — 不使用中继").arg(nodes.size());
+        networkStatus_ = assistedConnection_ ? tr("辅助连接已开启 — 优先尝试直连")
+                                             : tr("已配置 %1 台直连设备 — 不使用中继").arg(nodes.size());
         emit networkStatusChanged();
         saveProfile();
     }
@@ -839,13 +862,32 @@ bool MessengerController::configureNetwork(const QString& rendezvous)
         setError(reason);
         return false;
     }
-    if (accountId_.isEmpty() || !daemon_.configurePrivateNetwork(accountId_, config)) {
+    if (accountId_.isEmpty() || !daemon_.configurePrivateNetwork(accountId_, config, assistedConnection_)) {
         setError(tr("自建网络设置未能应用"));
         return false;
     }
     networkConfig_ = config;
     saveProfile();
-    networkStatus_ = config.isEmpty() ? tr("仅局域网发现") : tr("仅尝试连接指定设备 — 不使用中继");
+    networkStatus_ = assistedConnection_ ? tr("辅助连接已开启 — 可使用公共引导和中继")
+                                         : (config.isEmpty() ? tr("仅局域网发现")
+                                                             : tr("仅尝试连接指定设备 — 不使用中继"));
+    emit networkStatusChanged();
+    setError({});
+    return true;
+}
+
+bool MessengerController::setAssistedConnection(bool enabled)
+{
+    if (assistedConnection_ == enabled) return true;
+    if (accountId_.isEmpty() || !daemon_.configurePrivateNetwork(accountId_, networkConfig_, enabled)) {
+        setError(tr("连接模式切换失败：本机通信内核尚未就绪，请稍后重试。"));
+        return false;
+    }
+    assistedConnection_ = enabled;
+    saveProfile();
+    networkStatus_ = enabled ? tr("辅助连接已开启 — 可使用公共引导和中继")
+                             : tr("纯直连 — 不使用公共引导或中继");
+    emit assistedConnectionChanged();
     emit networkStatusChanged();
     setError({});
     return true;
@@ -887,6 +929,7 @@ void MessengerController::saveProfile()
                                           {QStringLiteral("directEndpoint"), directEndpoint_},
                                           {QStringLiteral("contacts"), contacts_},
                                           {QStringLiteral("network"), QVariantMap {
+                                               {QStringLiteral("assistedConnection"), assistedConnection_},
                                                {QStringLiteral("bootstrapNode"), networkConfig_.bootstrapNode},
                                                {QStringLiteral("turnHost"), networkConfig_.turnHost},
                                                {QStringLiteral("turnPort"), networkConfig_.turnPort},

@@ -30,6 +30,7 @@ class MessengerController final : public QObject
     Q_PROPERTY(QString lastError READ lastError NOTIFY lastErrorChanged)
     Q_PROPERTY(QStringList pendingRequests READ pendingRequests NOTIFY pendingRequestsChanged)
     Q_PROPERTY(QStringList pendingGroupRequests READ pendingGroupRequests NOTIFY pendingGroupRequestsChanged)
+    Q_PROPERTY(bool assistedConnection READ assistedConnection NOTIFY assistedConnectionChanged)
 
 public:
     explicit MessengerController(QObject* parent = nullptr);
@@ -50,6 +51,7 @@ public:
     QString lastError() const;
     QStringList pendingRequests() const;
     QStringList pendingGroupRequests() const;
+    bool assistedConnection() const;
 
     Q_INVOKABLE void selectContact(const QString& contactId);
     Q_INVOKABLE bool addContact(const QString& name, const QString& invite);
@@ -70,6 +72,7 @@ public:
     Q_INVOKABLE bool acceptFriendRequest(const QString& contactUri);
     Q_INVOKABLE bool acceptGroupRequest(const QString& conversationId);
     Q_INVOKABLE bool configureNetwork(const QString& rendezvous);
+    Q_INVOKABLE bool setAssistedConnection(bool enabled);
 
 signals:
     void contactsChanged();
@@ -86,6 +89,7 @@ signals:
     void lastErrorChanged();
     void pendingRequestsChanged();
     void pendingGroupRequestsChanged();
+    void assistedConnectionChanged();
 
 private:
     QVariantList contacts_;
@@ -104,6 +108,7 @@ private:
     QStringList pendingRequests_;
     QStringList pendingGroupRequests_;
     PrivateNetworkConfig networkConfig_;
+    bool assistedConnection_ {false};
     DaemonBridge daemon_;
     GatewayMapper gatewayMapper_;
     LocalVault vault_;

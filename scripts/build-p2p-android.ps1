@@ -16,7 +16,7 @@ $contrib = Join-Path $daemon 'contrib/aarch64-linux-android'
 $daemonBuild = Join-Path $BuildRoot 'daemon-android-arm64-v5'
 $enginePackage = Join-Path $BuildRoot 'android-engine-package/libjami-core.so'
 $appBuild = Join-Path $BuildRoot 'client-p2p-android-debug'
-$dist = Join-Path $repo 'dist/ShuangDianLiao-Android-arm64-Direct-debug.apk'
+$dist = Join-Path $repo 'dist/ShuangDianLiao-Android-arm64-Modes-Test-debug.apk'
 
 foreach ($required in @($cmake, (Join-Path $jdk 'bin/java.exe'),
                        (Join-Path $contrib 'lib/libyrs.a'),
@@ -55,6 +55,7 @@ if ($LASTEXITCODE) { throw 'Android engine strip failed' }
     "-DQT_HOST_PATH=$qtHost" "-DANDROID_SDK_ROOT=$sdk" `
     '-DANDROID_ABI=arm64-v8a' '-DANDROID_PLATFORM=android-26' '-DCMAKE_BUILD_TYPE=Debug' `
     '-DP2P_MESSENGER_WITH_DAEMON=ON' `
+    '-DCMAKE_AUTOGEN_PARALLEL=1' `
     "-DP2P_MESSENGER_DAEMON_INCLUDE_DIR=$daemon/src" `
     "-DP2P_MESSENGER_DAEMON_LIBRARY=$enginePackage"
 if ($LASTEXITCODE) { throw 'Android app configure failed' }
