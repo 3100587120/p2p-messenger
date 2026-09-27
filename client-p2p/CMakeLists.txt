@@ -62,6 +62,13 @@ if(P2P_MESSENGER_WITH_DAEMON)
     target_compile_definitions(P2PMessenger PRIVATE P2P_MESSENGER_WITH_DAEMON=1)
     target_include_directories(P2PMessenger PRIVATE ${P2P_MESSENGER_DAEMON_INCLUDE_DIR})
     target_link_libraries(P2PMessenger PRIVATE ${P2P_MESSENGER_DAEMON_LIBRARY})
+    if(ANDROID)
+        get_filename_component(_daemon_root "${P2P_MESSENGER_DAEMON_INCLUDE_DIR}" DIRECTORY)
+        target_include_directories(P2PMessenger PRIVATE
+            "${_daemon_root}/contrib/aarch64-linux-android/include")
+        set_property(TARGET P2PMessenger APPEND PROPERTY QT_ANDROID_EXTRA_LIBS
+            "${P2P_MESSENGER_DAEMON_LIBRARY}")
+    endif()
     if(WIN32)
         get_filename_component(_daemon_root "${P2P_MESSENGER_DAEMON_INCLUDE_DIR}" DIRECTORY)
         set(_contrib "${_daemon_root}/contrib")

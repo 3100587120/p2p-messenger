@@ -27,12 +27,33 @@ The test creates two isolated identities and verifies a live friend request,
 acceptance, private message, P2P file transfer, group invitation, and group
 message. It never uses a public Jami bootstrap.
 
+## Android local build
+
+The arm64 Android client now links the private Jami daemon and includes an
+Android document-URI bridge for file sending and saving. After installing the
+Qt 6.7.3 Android kit, Android SDK/NDK and JDK 17 under `work` on D:, build
+the native contrib once, then use:
+
+```powershell
+./scripts/build-p2p-android.ps1
+```
+
+The incremental script rebuilds only changed native objects and creates an
+installable, debug-signed APK at
+`dist/P2P-Messenger-Android-arm64-Private-Engine-debug.apk`. It keeps Gradle's
+cache on D:. A debug signature is for testing, not store distribution.
+
+The Android build has passed compilation, APK packaging, signature validation,
+and inspection confirming that `libjami-core.so` is in the APK. No Android
+device was connected for launch or two-device messaging tests. Those runtime
+checks and a first-party TURN relay test remain required before release.
+
 ## Current limits
 
-This is not a completed cross-platform release. The existing Android APKs in
-`dist` are UI-only shells and do not contain the Jami engine. The Android
-daemon checked out in `client-android/daemon` has a newer, incompatible API;
-its custom build and adapter are still required. iOS has not been validated.
+This is not a completed cross-platform release. Older Android APKs in `dist`
+are UI-only shells; use the `Private-Engine` APK above for current testing.
+The Android daemon API adapter compiles, but device-level behavior is still
+unverified. iOS has not been validated.
 
 The Qt-side chat cache is AES-GCM encrypted with a device-protected key. The
 embedded Jami engine also keeps its own local Git conversation repository,

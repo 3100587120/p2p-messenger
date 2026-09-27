@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QObject>
+#include <QHash>
 #include <QStringList>
 #include <QVariantList>
 
@@ -71,6 +72,8 @@ private:
     PrivateNetworkConfig networkConfig_;
     DaemonBridge daemon_;
     LocalVault vault_;
+    QHash<QString, QString> androidDownloadDestinations_;
+    QHash<QString, QString> androidDownloadPaths_;
 
     void appendMessage(const QString& body, bool outgoing, const QString& kind = QStringLiteral("text"));
     void appendMessageForContact(const QString& contactId, const QString& body, bool outgoing,

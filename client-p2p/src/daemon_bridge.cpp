@@ -52,9 +52,19 @@ bool DaemonBridge::start()
             details["RingNS.uri"] = "";
             DRing::setAccountDetails(id, details);
         }
-        DRing::registerSignalHandlers({DRing::exportable_callback<DRing::ConversationSignal::MessageReceived>(
+        DRing::registerSignalHandlers({
+#if defined(Q_OS_ANDROID)
+            DRing::exportable_callback<DRing::ConversationSignal::SwarmMessageReceived>(
+            [this](const std::string& accountId, const std::string& conversationId,
+                   const DRing::SwarmMessage& swarm) {
+                auto message = swarm.body;
+                message["id"] = swarm.id;
+                message["type"] = swarm.type;
+#else
+            DRing::exportable_callback<DRing::ConversationSignal::MessageReceived>(
             [this](const std::string& accountId, const std::string& conversationId,
                    std::map<std::string, std::string> message) {
+#endif
                 const auto author = message.find("author");
                 const auto id = message.find("id");
                 const auto account = QString::fromStdString(accountId);

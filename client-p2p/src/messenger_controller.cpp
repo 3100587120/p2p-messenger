@@ -1,11 +1,18 @@
 #include "messenger_controller.h"
 
 #include <QDateTime>
+#include <QFile>
 #include <QFileInfo>
+#include <QDir>
 #include <QGuiApplication>
 #include <QClipboard>
+#include <QStandardPaths>
 #include <QUrl>
 #include <QUuid>
+#ifdef Q_OS_ANDROID
+#include <QJniObject>
+#include <QtCore/qnativeinterface.h>
+#endif
 
 namespace {
 QVariantMap contact(const QString& id, const QString& name, const QString& status)
@@ -64,6 +71,29 @@ MessengerController::MessengerController(QObject* parent)
     connect(&daemon_, &DaemonBridge::transferChanged, this,
             [this](const QString& conversationId, const QString& fileId,
                    int eventCode, qint64 progress, qint64 total) {
+                bool documentWriteFailed = false;
+#ifdef Q_OS_ANDROID
+                const auto transferKey = conversationId + QLatin1Char('\n') + fileId;
+                if (androidDownloadDestinations_.contains(transferKey) &&
+                    (eventCode == 6 || eventCode >= 7 || eventCode == 2)) {
+                    const auto destination = androidDownloadDestinations_.take(transferKey);
+                    const auto localPath = androidDownloadPaths_.take(transferKey);
+                    if (eventCode == 6) {
+                        const auto context = QNativeInterface::QAndroidApplication::context();
+                        const auto javaDestination = QJniObject::fromString(destination);
+                        const bool saved = QJniObject::callStaticMethod<jboolean>(
+                            "io/p2pmessenger/app/ContentFiles", "copyFromCache",
+                            "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)Z",
+                            context.object<jobject>(), QJniObject::fromString(localPath).object<jstring>(),
+                            javaDestination.object<jstring>());
+                        if (!saved) {
+                            documentWriteFailed = true;
+                            setError(tr("文件已收到，但无法写入选定位置"));
+                        }
+                    }
+                    QFile::remove(localPath);
+                }
+#endif
                 for (const auto& item : contacts_) {
                     const auto contact = item.toMap();
                     if (contact.value(QStringLiteral("conversationId")).toString() != conversationId)
@@ -74,7 +104,8 @@ MessengerController::MessengerController(QObject* parent)
                         auto message = value.toMap();
                         if (message.value(QStringLiteral("fileId")).toString() != fileId) continue;
                         QString state;
-                        if (eventCode == 6) state = tr("已完成");
+                        if (documentWriteFailed) state = tr("保存失败");
+                        else if (eventCode == 6) state = tr("已完成");
                         else if (eventCode == 5 && total > 0)
                             state = tr("传输中 %1%").arg(progress * 100 / total);
                         else if (eventCode >= 7 || eventCode == 2)
@@ -301,7 +332,17 @@ bool MessengerController::sendMessage(const QString& body)
 
 bool MessengerController::queueFile(const QString& path)
 {
-    const auto localPath = path.startsWith(QStringLiteral("file:")) ? QUrl(path).toLocalFile() : path;
+    auto localPath = path.startsWith(QStringLiteral("file:")) ? QUrl(path).toLocalFile() : path;
+#ifdef Q_OS_ANDROID
+    if (path.startsWith(QStringLiteral("content:"))) {
+        const auto context = QNativeInterface::QAndroidApplication::context();
+        const auto javaPath = QJniObject::fromString(path);
+        localPath = QJniObject::callStaticObjectMethod(
+            "io/p2pmessenger/app/ContentFiles", "copyToCache",
+            "(Landroid/content/Context;Ljava/lang/String;)Ljava/lang/String;",
+            context.object<jobject>(), javaPath.object<jstring>()).toString();
+    }
+#endif
     if (localPath.isEmpty() || !QFileInfo::exists(localPath)) {
         setError(tr("找不到要发送的文件"));
         return false;
@@ -331,8 +372,17 @@ bool MessengerController::queueFile(const QString& path)
 bool MessengerController::downloadFile(const QString& interactionId, const QString& fileId,
                                        const QString& destination)
 {
-    const auto localPath = destination.startsWith(QStringLiteral("file:"))
+    auto localPath = destination.startsWith(QStringLiteral("file:"))
         ? QUrl(destination).toLocalFile() : destination;
+#ifdef Q_OS_ANDROID
+    const bool androidDocument = destination.startsWith(QStringLiteral("content:"));
+    if (androidDocument) {
+        const auto cache = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+        QDir().mkpath(cache);
+        localPath = cache + QStringLiteral("/incoming-") +
+                    QUuid::createUuid().toString(QUuid::WithoutBraces);
+    }
+#endif
     if (localPath.isEmpty() || QFileInfo::exists(localPath)) {
         setError(tr("请选择一个尚不存在的保存路径"));
         return false;
@@ -346,6 +396,13 @@ bool MessengerController::downloadFile(const QString& interactionId, const QStri
             setError(tr("无法开始下载文件"));
             return false;
         }
+#ifdef Q_OS_ANDROID
+        if (androidDocument) {
+            const auto key = conversationId + QLatin1Char('\n') + fileId;
+            androidDownloadDestinations_.insert(key, destination);
+            androidDownloadPaths_.insert(key, localPath);
+        }
+#endif
         return true;
     }
     return false;
