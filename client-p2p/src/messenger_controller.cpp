@@ -215,7 +215,7 @@ MessengerController::MessengerController(QObject* parent)
     connect(&gatewayMapper_, &GatewayMapper::statusChanged, this,
             [this](const QString& status) {
                 if (assistedConnection_) {
-                    networkStatus_ = tr("辅助连接已开启 — 可使用公共引导和中继");
+                    networkStatus_ = tr("辅助连接已开启 — 可使用公共 DHT 代理和中继");
                     emit networkStatusChanged();
                     return;
                 }
@@ -349,7 +349,7 @@ MessengerController::MessengerController(QObject* parent)
     }
     if (!accountId_.isEmpty() && networkConfig_.isValid()) {
         daemon_.configurePrivateNetwork(accountId_, networkConfig_, assistedConnection_);
-        networkStatus_ = assistedConnection_ ? tr("辅助连接已开启 — 可使用公共引导和中继")
+        networkStatus_ = assistedConnection_ ? tr("辅助连接已开启 — 可使用公共 DHT 代理和中继")
                                              : tr("纯直连 — 不使用公共引导或中继");
     }
     if (!accountId_.isEmpty() && !profileName_.isEmpty())
@@ -611,7 +611,7 @@ bool MessengerController::addContact(const QString& name, const QString& invite)
             return false;
         }
         networkConfig_ = directConfig;
-        networkStatus_ = assistedConnection_ ? tr("辅助连接已开启 — 优先尝试直连")
+        networkStatus_ = assistedConnection_ ? tr("辅助连接已开启 — 可使用公共 DHT 代理")
                                              : tr("已配置 %1 台直连设备 — 不使用中继").arg(nodes.size());
         emit networkStatusChanged();
         saveProfile();
@@ -619,6 +619,12 @@ bool MessengerController::addContact(const QString& name, const QString& invite)
     for (const auto& value : contacts_) {
         const auto existing = value.toMap();
         if (existing.value(QStringLiteral("uri")).toString() == peerCode) {
+            if (!existing.value(QStringLiteral("ready"), false).toBool()) {
+                if (!daemon_.addVerifiedContact(accountId_, peerCode)) {
+                    setError(tr("好友申请未重新提交：本机通信网络尚未就绪。请保持应用打开并联网，稍后重试。"));
+                    return false;
+                }
+            }
             selectContact(existing.value(QStringLiteral("id")).toString());
             setError({});
             return true;
@@ -883,7 +889,7 @@ bool MessengerController::configureNetwork(const QString& rendezvous)
     }
     networkConfig_ = config;
     saveProfile();
-    networkStatus_ = assistedConnection_ ? tr("辅助连接已开启 — 可使用公共引导和中继")
+    networkStatus_ = assistedConnection_ ? tr("辅助连接已开启 — 可使用公共 DHT 代理和中继")
                                          : (config.isEmpty() ? tr("仅局域网发现")
                                                              : tr("仅尝试连接指定设备 — 不使用中继"));
     emit networkStatusChanged();
@@ -900,7 +906,7 @@ bool MessengerController::setAssistedConnection(bool enabled)
     }
     assistedConnection_ = enabled;
     saveProfile();
-    networkStatus_ = enabled ? tr("辅助连接已开启 — 可使用公共引导和中继")
+    networkStatus_ = enabled ? tr("辅助连接已开启 — 可使用公共 DHT 代理和中继")
                              : tr("纯直连 — 不使用公共引导或中继");
     emit assistedConnectionChanged();
     emit networkStatusChanged();

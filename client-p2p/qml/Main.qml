@@ -139,7 +139,7 @@ ApplicationWindow {
             }
             Label {
                 text: messenger.assistedConnection
-                      ? "已允许使用 Jami 公共节点寻找对方；直连不通时可尝试 TURN 中继。消息和文件仍端到端加密，但公共服务会看到连接元数据；服务不可用时也可能连接失败。"
+                      ? "已允许使用 Jami 公共 DHT 代理寻找对方；直连不通时可尝试 TURN 中继。消息和文件仍端到端加密，但公共服务会看到连接元数据；服务不可用时也可能连接失败。"
                       : "默认模式：不连接公共引导或中继。跨网连接取决于双方网络是否允许直连；失败时可自行切换辅助连接。"
                 color: window.subdued; wrapMode: Text.Wrap; Layout.fillWidth: true; font.pixelSize: 12
             }

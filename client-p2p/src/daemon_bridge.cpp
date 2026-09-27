@@ -326,6 +326,9 @@ bool DaemonBridge::addVerifiedContact(const QString& accountId, const QString& c
     const auto registration = state.find("Account.registrationStatus");
     if (registration == state.end() || registration->second != "REGISTERED")
         return false;
+    const auto announced = state.find("Account.deviceAnnounced");
+    if (announced == state.end() || announced->second != "true")
+        return false;
     DRing::sendTrustRequest(accountId.toStdString(), contactUri.toStdString());
     // Jami creates the one-to-one conversation asynchronously. An empty
     // conversation list here does not mean the request failed to submit.
@@ -558,8 +561,12 @@ bool DaemonBridge::configurePrivateNetwork(const QString& accountId, const Priva
     details["Account.hostname"] = bootstrap.toStdString();
     details["Account.bootstrapListUrl"] = "";
     details["Account.dhtProxyListUrl"] = "";
-    details["Account.proxyEnabled"] = "false";
-    details["Account.proxyServer"] = "";
+    // Assisted mode uses Jami's HTTP DHT proxy for discovery and encrypted
+    // trust-request signaling on networks where UDP DHT cannot bootstrap.
+    // Direct mode never contacts this service.
+    details["Account.proxyListEnabled"] = "false";
+    details["Account.proxyEnabled"] = assisted ? "true" : "false";
+    details["Account.proxyServer"] = assisted ? "http://dhtproxy.jami.net" : "";
     details["STUN.enable"] = "false";
     details["STUN.server"] = "";
     details["Account.upnpEnabled"] = "true";
@@ -578,8 +585,10 @@ bool DaemonBridge::configurePrivateNetwork(const QString& accountId, const Priva
     const auto applied = DRing::getAccountDetails(accountId.toStdString());
     const auto host = applied.find("Account.hostname");
     const auto turn = applied.find("TURN.enable");
+    const auto proxy = applied.find("Account.proxyEnabled");
     return host != applied.end() && host->second == bootstrap.toStdString() &&
-           turn != applied.end() && turn->second == (assisted ? "true" : "false");
+           turn != applied.end() && turn->second == (assisted ? "true" : "false") &&
+           proxy != applied.end() && proxy->second == (assisted ? "true" : "false");
 #else
     Q_UNUSED(accountId); Q_UNUSED(config); Q_UNUSED(assisted); return false;
 #endif
