@@ -106,14 +106,20 @@ ApplicationWindow {
 
     Dialog {
         id: addFriend
-        title: "连接设备"
+        title: "添加好友"
         modal: true
         anchors.centerIn: parent
         width: Math.min(420, window.width - 40)
         standardButtons: Dialog.Cancel
         onOpened: messenger.refreshNearbyPeers()
         background: Rectangle { color: window.panel; radius: 16 }
-        contentItem: ColumnLayout {
+        contentItem: ScrollView {
+            id: addFriendScroll
+            implicitHeight: Math.min(addFriendContent.implicitHeight + 12, window.height - 130)
+            contentWidth: availableWidth
+            ColumnLayout {
+            id: addFriendContent
+            width: addFriendScroll.availableWidth
             spacing: 14
             Label { text: "同一 Wi-Fi 可点选附近设备；不在一起时，请对方发来配对码。"; wrapMode: Text.Wrap; color: window.subdued; Layout.fillWidth: true }
             Label { text: "附近设备"; color: window.accent; font.bold: true; Layout.fillWidth: true }
@@ -121,7 +127,7 @@ ApplicationWindow {
                 model: messenger.nearbyPeers
                 delegate: Button {
                     required property var modelData
-                    text: "连接 " + modelData.name
+                    text: "添加 " + modelData.name
                     Layout.fillWidth: true
                     onClicked: { if (messenger.addNearbyPeer(modelData.uri)) addFriend.close() }
                 }
@@ -131,10 +137,11 @@ ApplicationWindow {
             TextField { id: friendName; placeholderText: "备注名称（可选）"; Layout.fillWidth: true }
             TextArea { id: invite; placeholderText: "粘贴对方的配对码"; wrapMode: Text.Wrap; Layout.fillWidth: true; Layout.preferredHeight: 90 }
             Button {
-                text: "连接这台设备"
+                text: "发送好友申请"
                 enabled: invite.text.trim().length > 0
                 Layout.alignment: Qt.AlignRight
                 onClicked: { if (messenger.addContact(friendName.text, invite.text)) addFriend.close() }
+            }
             }
         }
     }
@@ -235,7 +242,7 @@ ApplicationWindow {
                         Button { text: "加入"; onClicked: messenger.acceptGroupRequest(modelData) }
                     }
                 }
-                Button { text: "+ 连接设备"; Layout.fillWidth: true; onClicked: addFriend.open() }
+                Button { text: "+ 添加好友"; Layout.fillWidth: true; onClicked: addFriend.open() }
                 Button { text: "新建群聊"; Layout.fillWidth: true; onClicked: createGroup.open() }
                 Label { text: "消息"; color: window.subdued; font.bold: true; font.pixelSize: 12 }
                 ListView {
@@ -281,6 +288,7 @@ ApplicationWindow {
                         Label { text: messenger.activeContactName; color: "white"; font.pixelSize: window.mobile ? 18 : 22; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
                         Label { text: "端到端加密  ·  本地记录"; color: window.subdued; font.pixelSize: 12 }
                     }
+                    Button { text: "加好友"; visible: window.mobile; onClicked: addFriend.open() }
                     Label { text: "私有网络"; color: window.accent; font.bold: true; visible: !window.mobile }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#30415d" }
