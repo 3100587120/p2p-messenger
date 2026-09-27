@@ -73,12 +73,17 @@ entering a name or address manually. Action failures appear in a modal dialog
 with a suggested next step; an unconfirmed connection prompts after one minute.
 The app uses the peer as its DHT entry point, not a hosted service. There is
 no TURN relay. On the same LAN, the Jami ID alone can use local peer discovery.
-The suggested endpoints use the actual bound DHT port. Across networks, an
-address must still be publicly reachable (for example, global IPv6 or a
-manually forwarded UDP port). The app does not automatically map router ports,
-discover public IPv4 addresses, or verify reachability, so connection success
-is not guaranteed behind restrictive NATs. Advanced settings remain available
-for a manually reachable address.
+The suggested endpoints use the actual bound DHT port. Across networks, the
+client first tries local-router UPnP IGD (SSDP discovery, external-address
+query, a one-hour UDP port mapping with renewal). It only talks to a private
+numeric gateway address and does not call a third-party discovery service.
+If the gateway returns a public IPv4 address and accepts the mapping, that
+endpoint is included in the pairing code alongside global IPv6 and LAN IPv4.
+The client rejects carrier-grade/private WAN addresses. UPnP is not supported
+by every router and no serverless technique guarantees a connection through
+restrictive NATs. It does not implement PCP/NAT-PMP or independently verify
+reachability from outside the LAN yet. Advanced settings remain available for
+a manually reachable address.
 
 ## Current limits
 

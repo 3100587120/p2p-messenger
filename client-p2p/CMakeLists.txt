@@ -22,6 +22,8 @@ qt_add_executable(P2PMessenger
     src/messenger_controller.h
     src/daemon_bridge.cpp
     src/daemon_bridge.h
+    src/gateway_mapper.cpp
+    src/gateway_mapper.h
     src/local_vault.cpp
     src/local_vault.h
     src/private_network_config.cpp
@@ -139,4 +141,12 @@ if(P2P_MESSENGER_BUILD_DAEMON_E2E)
     get_target_property(_p2p_messenger_links P2PMessenger LINK_LIBRARIES)
     target_link_libraries(P2PMessengerDaemonE2E PRIVATE ${_p2p_messenger_links})
     target_link_options(P2PMessengerDaemonE2E PRIVATE /LTCG /ignore:4006)
+
+    add_executable(P2PMessengerGatewayTest
+        tests/gateway_mapper_test.cpp
+        src/gateway_mapper.cpp
+        src/gateway_mapper.h)
+    target_compile_definitions(P2PMessengerGatewayTest PRIVATE P2P_MESSENGER_GATEWAY_TESTING=1)
+    target_include_directories(P2PMessengerGatewayTest PRIVATE src)
+    target_link_libraries(P2PMessengerGatewayTest PRIVATE Qt6::Network)
 endif()

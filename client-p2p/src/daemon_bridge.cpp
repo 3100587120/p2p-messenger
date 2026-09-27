@@ -49,7 +49,8 @@ bool DaemonBridge::start()
             details["STUN.server"] = "";
             details["TURN.enable"] = "false";
             details["TURN.server"] = "";
-            details["Account.upnpEnabled"] = "false";
+            // UPnP talks only to the local gateway and helps direct file sessions.
+            details["Account.upnpEnabled"] = "true";
 #if defined(Q_OS_WIN)
             details["DHT.port"] = "4222";
 #else
@@ -220,7 +221,7 @@ QString DaemonBridge::createLocalIdentity(const QString& displayName)
                                        {"Account.proxyEnabled", "false"},
                                        {"STUN.enable", "false"},
                                        {"TURN.enable", "false"},
-                                       {"Account.upnpEnabled", "false"},
+                                       {"Account.upnpEnabled", "true"},
 #if defined(Q_OS_WIN)
                                        {"DHT.port", "4222"},
 #else
@@ -519,7 +520,7 @@ bool DaemonBridge::configurePrivateNetwork(const QString& accountId, const Priva
     details["Account.proxyServer"] = "";
     details["STUN.enable"] = "false";
     details["STUN.server"] = "";
-    details["Account.upnpEnabled"] = "false";
+    details["Account.upnpEnabled"] = "true";
     details["Account.peerDiscovery"] = "true";
     details["Account.accountDiscovery"] = "true";
     details["Account.accountPublish"] = "true";

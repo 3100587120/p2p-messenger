@@ -70,6 +70,15 @@ QString numericEndpointList(const QString& input)
     return endpoints.join(QLatin1Char(';'));
 }
 
+bool usableGlobalIPv6(const QHostAddress& address)
+{
+    return address.protocol() == QAbstractSocket::IPv6Protocol &&
+           address.isInSubnet(QHostAddress(QStringLiteral("2000::")), 3) &&
+           !address.isInSubnet(QHostAddress(QStringLiteral("2001:0::")), 32) &&
+           !address.isInSubnet(QHostAddress(QStringLiteral("2002::")), 16) &&
+           !address.isInSubnet(QHostAddress(QStringLiteral("2001:db8::")), 32);
+}
+
 bool decodePairingCode(const QString& code, QString* peer, QString* endpoint, QString* name)
 {
     const QUrl url(code, QUrl::StrictMode);
@@ -198,6 +207,23 @@ MessengerController::MessengerController(QObject* parent)
                 emit inviteCodeChanged();
                 emit pairingCodeChanged();
             });
+    connect(&gatewayMapper_, &GatewayMapper::endpointChanged, this,
+            [this](const QString& endpoint) {
+                mappedEndpoint_ = endpoint;
+                emit pairingCodeChanged();
+            });
+    connect(&gatewayMapper_, &GatewayMapper::statusChanged, this,
+            [this](const QString& status) {
+                bool ipv6Available = false;
+                for (const auto& address : QNetworkInterface::allAddresses()) {
+                    if (usableGlobalIPv6(address)) { ipv6Available = true; break; }
+                }
+                networkStatus_ = ipv6Available && !gatewayMapper_.busy() &&
+                                 gatewayMapper_.endpoint().isEmpty()
+                    ? tr("公网 IPv6 可尝试直连；本地路由器的 IPv4 自动映射不可用。")
+                    : status;
+                emit networkStatusChanged();
+            });
     connect(&daemon_, &DaemonBridge::nearbyPeerChanged, this,
             [this](const QString& accountId, const QString& uri,
                    const QString& name, bool present) {
@@ -280,6 +306,7 @@ MessengerController::MessengerController(QObject* parent)
         if (port != listeningPort_) {
             listeningPort_ = port;
             emit listeningPortChanged();
+            if (port > 0) gatewayMapper_.start(static_cast<quint16>(port));
         }
         const auto code = inviteCode_.isEmpty() ? daemon_.inviteCode(accountId_) : QString {};
         if (!code.isEmpty() && inviteCode_.isEmpty()) {
@@ -353,13 +380,15 @@ QVariantList MessengerController::nearbyPeers() const { return nearbyPeers_; }
 QString MessengerController::pairingCode() const
 {
     if (inviteCode_.isEmpty()) return {};
-    if (directEndpoint_.isEmpty()) return inviteCode_;
+    if (directEndpoint_.isEmpty() && mappedEndpoint_.isEmpty()) return inviteCode_;
     QUrl url;
     url.setScheme(QStringLiteral("p2pm"));
     url.setHost(QStringLiteral("pair"));
     QUrlQuery query;
     query.addQueryItem(QStringLiteral("v"), QStringLiteral("1"));
     query.addQueryItem(QStringLiteral("peer"), inviteCode_);
+    if (!mappedEndpoint_.isEmpty())
+        query.addQueryItem(QStringLiteral("node"), mappedEndpoint_);
     for (const auto& endpoint : directEndpoint_.split(QLatin1Char(';'), Qt::SkipEmptyParts))
         query.addQueryItem(QStringLiteral("node"), endpoint);
     if (!profileName_.isEmpty()) query.addQueryItem(QStringLiteral("name"), profileName_);
@@ -444,9 +473,7 @@ bool MessengerController::useLocalNetworkAddress()
             (interface.flags() & QNetworkInterface::IsLoopBack)) continue;
         for (const auto& entry : interface.addressEntries()) {
             const auto address = entry.ip();
-            if (address.protocol() == QAbstractSocket::IPv6Protocol &&
-                address.isInSubnet(QHostAddress(QStringLiteral("2000::")), 3) &&
-                candidates.size() < 2)
+            if (usableGlobalIPv6(address) && candidates.size() < 2)
                 candidates.append(QStringLiteral("[%1]:%2").arg(address.toString()).arg(listeningPort_));
             if (address.protocol() != QAbstractSocket::IPv4Protocol || !localAddress.isEmpty()) continue;
             const auto privateAddress = address.isInSubnet(QHostAddress(QStringLiteral("10.0.0.0")), 8) ||
@@ -469,6 +496,10 @@ void MessengerController::copyPairingCode()
 
 bool MessengerController::copyLocalPairingCode()
 {
+    if (gatewayMapper_.busy() && mappedEndpoint_.isEmpty()) {
+        setError(tr("正在向本地路由器申请跨网直连地址，请稍后再试。"));
+        return false;
+    }
     if (!useLocalNetworkAddress() || pairingCode().isEmpty()) return false;
     copyPairingCode();
     return true;

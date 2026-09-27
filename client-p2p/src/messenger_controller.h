@@ -6,6 +6,7 @@
 #include <QVariantList>
 
 #include "daemon_bridge.h"
+#include "gateway_mapper.h"
 #include "local_vault.h"
 #include "private_network_config.h"
 
@@ -95,6 +96,7 @@ private:
     QString inviteCode_;
     QString profileName_;
     QString directEndpoint_;
+    QString mappedEndpoint_;
     int listeningPort_ {0};
     QTimer* identityRefresh_ {nullptr};
     QVariantList nearbyPeers_;
@@ -103,6 +105,7 @@ private:
     QStringList pendingGroupRequests_;
     PrivateNetworkConfig networkConfig_;
     DaemonBridge daemon_;
+    GatewayMapper gatewayMapper_;
     LocalVault vault_;
     QHash<QString, QString> androidDownloadDestinations_;
     QHash<QString, QString> androidDownloadPaths_;
