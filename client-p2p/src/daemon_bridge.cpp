@@ -9,6 +9,7 @@
 #include <jami/conversation_interface.h>
 #include <jami/datatransfer_interface.h>
 #include <jami/jami.h>
+#include <jami/presencemanager_interface.h>
 #include <gnutls/gnutls.h>
 #if defined(Q_OS_ANDROID)
 namespace DRing = libjami;
@@ -49,7 +50,14 @@ bool DaemonBridge::start()
             details["TURN.enable"] = "false";
             details["TURN.server"] = "";
             details["Account.upnpEnabled"] = "false";
+#if defined(Q_OS_WIN)
+            details["DHT.port"] = "4222";
+#else
+            details["Account.dhtPort"] = "4222";
+#endif
             details["Account.peerDiscovery"] = "true";
+            details["Account.accountDiscovery"] = "true";
+            details["Account.accountPublish"] = "true";
             details["RingNS.uri"] = "";
             DRing::setAccountDetails(id, details);
         }
@@ -105,6 +113,16 @@ bool DaemonBridge::start()
                         [this, id = QString::fromStdString(accountId),
                          code = QString::fromStdString(user->second)] {
                             emit identityChanged(id, code);
+                        }, Qt::QueuedConnection);
+                }),
+            DRing::exportable_callback<DRing::PresenceSignal::NearbyPeerNotification>(
+                [this](const std::string& accountId, const std::string& peer,
+                       int state, const std::string& displayName) {
+                    QMetaObject::invokeMethod(this,
+                        [this, id = QString::fromStdString(accountId),
+                         uri = QString::fromStdString(peer),
+                         name = QString::fromStdString(displayName), state] {
+                            emit nearbyPeerChanged(id, uri, name, state == 0);
                         }, Qt::QueuedConnection);
                 }),
             DRing::exportable_callback<DRing::ConfigurationSignal::IncomingTrustRequest>(
@@ -195,6 +213,7 @@ QString DaemonBridge::createLocalIdentity(const QString& displayName)
     }
     const auto id = DRing::addAccount({{"Account.type", "RING"},
                                        {"Account.alias", displayName.toStdString()},
+                                       {"Account.displayName", displayName.toStdString()},
                                        {"Account.hostname", ""},
                                        {"Account.bootstrapListUrl", ""},
                                        {"Account.dhtProxyListUrl", ""},
@@ -202,7 +221,14 @@ QString DaemonBridge::createLocalIdentity(const QString& displayName)
                                        {"STUN.enable", "false"},
                                        {"TURN.enable", "false"},
                                        {"Account.upnpEnabled", "false"},
+#if defined(Q_OS_WIN)
+                                       {"DHT.port", "4222"},
+#else
+                                       {"Account.dhtPort", "4222"},
+#endif
                                        {"Account.peerDiscovery", "true"},
+                                       {"Account.accountDiscovery", "true"},
+                                       {"Account.accountPublish", "true"},
                                        {"RingNS.uri", ""}});
     return QString::fromStdString(id);
 #else
@@ -224,6 +250,39 @@ QString DaemonBridge::inviteCode(const QString& accountId) const
 #endif
 }
 
+int DaemonBridge::listeningPort(const QString& accountId) const
+{
+#ifdef P2P_MESSENGER_WITH_DAEMON
+    if (!started_ || accountId.isEmpty()) return 0;
+    const auto details = DRing::getVolatileAccountDetails(accountId.toStdString());
+    const auto port = details.find("Account.dhtBoundPort");
+    if (port != details.end()) return QString::fromStdString(port->second).toInt();
+#if defined(Q_OS_WIN)
+    const auto configured = DRing::getAccountDetails(accountId.toStdString());
+    const auto requested = configured.find("DHT.port");
+    return requested == configured.end() ? 0 : QString::fromStdString(requested->second).toInt();
+#else
+    return 0;
+#endif
+#else
+    Q_UNUSED(accountId)
+    return 0;
+#endif
+}
+
+QMap<QString, QString> DaemonBridge::nearbyPeers(const QString& accountId) const
+{
+    QMap<QString, QString> result;
+#ifdef P2P_MESSENGER_WITH_DAEMON
+    if (!started_ || accountId.isEmpty()) return result;
+    for (const auto& [uri, name] : DRing::getNearbyPeers(accountId.toStdString()))
+        result.insert(QString::fromStdString(uri), QString::fromStdString(name));
+#else
+    Q_UNUSED(accountId)
+#endif
+    return result;
+}
+
 bool DaemonBridge::setIdentityAlias(const QString& accountId, const QString& alias)
 {
 #ifdef P2P_MESSENGER_WITH_DAEMON
@@ -231,6 +290,7 @@ bool DaemonBridge::setIdentityAlias(const QString& accountId, const QString& ali
     auto details = DRing::getAccountDetails(accountId.toStdString());
     if (details.empty()) return false;
     details["Account.alias"] = alias.trimmed().toStdString();
+    details["Account.displayName"] = alias.trimmed().toStdString();
     DRing::setAccountDetails(accountId.toStdString(), details);
     return true;
 #else
@@ -461,12 +521,14 @@ bool DaemonBridge::configurePrivateNetwork(const QString& accountId, const Priva
     details["STUN.server"] = "";
     details["Account.upnpEnabled"] = "false";
     details["Account.peerDiscovery"] = "true";
+    details["Account.accountDiscovery"] = "true";
+    details["Account.accountPublish"] = "true";
     details["RingNS.uri"] = "";
-    details["TURN.enable"] = config.turnHost.isEmpty() ? "false" : "true";
-    details["TURN.server"] = config.turnHost.isEmpty()
-        ? "" : QStringLiteral("%1:%2").arg(config.turnHost).arg(config.turnPort).toStdString();
-    details["TURN.username"] = config.turnUser.toStdString();
-    details["TURN.password"] = config.turnPassword.toStdString();
+    // Strict direct mode: never use a relay, even if an older profile stored one.
+    details["TURN.enable"] = "false";
+    details["TURN.server"] = "";
+    details["TURN.username"] = "";
+    details["TURN.password"] = "";
     DRing::setAccountDetails(accountId.toStdString(), details);
     return true;
 #else

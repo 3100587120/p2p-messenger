@@ -3,6 +3,10 @@
 #include <QQmlContext>
 #include <QFile>
 #include <QTimer>
+#ifdef Q_OS_ANDROID
+#include <QJniObject>
+#include <QtCore/qnativeinterface.h>
+#endif
 
 #include "messenger_controller.h"
 
@@ -25,7 +29,20 @@ int main(int argc, char* argv[])
     QGuiApplication application(argc, argv);
     traceStartup("qt-ready");
     QGuiApplication::setApplicationName(QStringLiteral("P2P Messenger"));
+    QGuiApplication::setApplicationDisplayName(QStringLiteral("双点聊"));
     QGuiApplication::setOrganizationName(QStringLiteral("P2P Messenger"));
+#ifdef Q_OS_ANDROID
+    const auto updateLanDiscovery = [](Qt::ApplicationState state) {
+        const auto context = QNativeInterface::QAndroidApplication::context();
+        QJniObject::callStaticMethod<void>(
+            "io/p2pmessenger/app/LocalDiscovery", "setActive",
+            "(Landroid/content/Context;Z)V", context.object<jobject>(),
+            static_cast<jboolean>(state == Qt::ApplicationActive));
+    };
+    QObject::connect(&application, &QGuiApplication::applicationStateChanged,
+                     &application, updateLanDiscovery);
+    updateLanDiscovery(application.applicationState());
+#endif
 
     MessengerController messenger;
     traceStartup("controller-ready");

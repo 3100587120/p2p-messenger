@@ -10,7 +10,7 @@ ApplicationWindow {
     minimumWidth: Qt.platform.os === "android" ? 320 : 740
     minimumHeight: Qt.platform.os === "android" ? 480 : 560
     visible: true
-    title: "P2P Messenger"
+    title: "双点聊"
     color: "#0b1220"
 
     property color panel: "#182235"
@@ -19,6 +19,9 @@ ApplicationWindow {
     property color subdued: "#91a1bb"
     property bool mobile: Qt.platform.os === "android" || width < 740
     property bool showThread: false
+    property bool pairingCopied: false
+    property bool searchedNearby: false
+    Timer { id: copiedReset; interval: 3000; onTriggered: window.pairingCopied = false }
 
     Component.onCompleted: {
         if (messenger.profileName.length === 0)
@@ -33,7 +36,12 @@ ApplicationWindow {
         width: Math.min(440, window.width - 24)
         standardButtons: Dialog.Close
         background: Rectangle { color: window.panel; radius: 16 }
-        contentItem: ColumnLayout {
+        contentItem: ScrollView {
+            id: accountScroll
+            implicitHeight: Math.min(610, window.height - 130)
+            contentWidth: availableWidth
+            ColumnLayout {
+            width: accountScroll.availableWidth
             spacing: 12
             Label { text: "账号只保存在这台设备，不依赖第三方注册服务。"; color: window.subdued; wrapMode: Text.Wrap; Layout.fillWidth: true }
             Label { text: "账号名称"; color: "white"; font.bold: true }
@@ -48,8 +56,17 @@ ApplicationWindow {
                 Button { text: "复制邀请码"; enabled: messenger.inviteCode.length > 0; Layout.fillWidth: true; onClicked: messenger.copyInviteCode() }
                 Button { text: "重试"; Layout.fillWidth: true; onClicked: messenger.retryIdentity() }
             }
-            Label { text: "不配置服务器时仅能尝试本地网络发现；跨互联网首次连接不能保证成功。聊天和文件不经过本应用的服务器。"; color: window.subdued; wrapMode: Text.Wrap; Layout.fillWidth: true; font.pixelSize: 12 }
+            Label { text: "双机直连配对"; color: window.accent; font.bold: true }
+            Label { text: "本机 DHT 监听端口：" + (messenger.listeningPort > 0 ? messenger.listeningPort : "尚未就绪"); color: window.subdued; Layout.fillWidth: true; font.pixelSize: 12 }
+            TextField { id: directAddress; text: messenger.directEndpoint; placeholderText: "本机可达 IP:端口，如 192.168.1.2:4222"; Layout.fillWidth: true }
+            Button { text: "使用本机局域网地址"; Layout.fillWidth: true; onClicked: { if (messenger.useLocalNetworkAddress()) directAddress.text = messenger.directEndpoint } }
+            Button { text: "一键复制局域网配对码"; Layout.fillWidth: true; onClicked: { if (messenger.copyLocalPairingCode()) directAddress.text = messenger.directEndpoint } }
+            Button { text: "保存本机直连地址"; Layout.fillWidth: true; onClicked: messenger.setDirectEndpoint(directAddress.text) }
+            Label { text: "同一 Wi-Fi 可留空并分享邀请码；跨网必须填写对方能访问的公网 IPv6 或已映射端口。此地址只打包进配对码，不发送给服务端。"; color: window.subdued; wrapMode: Text.Wrap; Layout.fillWidth: true; font.pixelSize: 12 }
+            Button { text: "复制双机配对码"; enabled: messenger.pairingCode.length > 0; Layout.fillWidth: true; onClicked: messenger.copyPairingCode() }
+            Label { text: "仅直连，不使用 TURN 中继。两端均被运营商 NAT 阻挡时会连接失败；安卓后台运行仍需单独验证。"; color: window.subdued; wrapMode: Text.Wrap; Layout.fillWidth: true; font.pixelSize: 12 }
             Label { text: messenger.lastError; color: "#ff9c9c"; wrapMode: Text.Wrap; Layout.fillWidth: true; visible: messenger.lastError.length > 0 }
+            }
         }
     }
 
@@ -63,12 +80,12 @@ ApplicationWindow {
         background: Rectangle { color: window.panel; radius: 16 }
         contentItem: ColumnLayout {
             spacing: 14
-            Label { text: "输入对方给你的邀请码或扫描二维码后得到的内容。"; wrapMode: Text.Wrap; color: window.subdued; Layout.fillWidth: true }
-            TextField { id: friendName; placeholderText: "备注名称"; Layout.fillWidth: true }
-            TextArea { id: invite; placeholderText: "邀请码"; wrapMode: Text.Wrap; Layout.fillWidth: true; Layout.preferredHeight: 110 }
+            Label { text: "粘贴对方的 40 位邀请码，或包含可达 IP 的完整双机配对码。"; wrapMode: Text.Wrap; color: window.subdued; Layout.fillWidth: true }
+            TextField { id: friendName; placeholderText: "备注名称（可选）"; Layout.fillWidth: true }
+            TextArea { id: invite; placeholderText: "邀请码 / p2pm://pair?..."; wrapMode: Text.Wrap; Layout.fillWidth: true; Layout.preferredHeight: 110 }
             Button {
                 text: "验证并添加"
-                enabled: friendName.text.trim().length > 0 && invite.text.trim().length > 0
+                enabled: invite.text.trim().length > 0
                 Layout.alignment: Qt.AlignRight
                 onClicked: { if (messenger.addContact(friendName.text, invite.text)) addFriend.close() }
             }
@@ -77,7 +94,7 @@ ApplicationWindow {
 
     Dialog {
         id: networkSettings
-        title: "自建网络设置"
+        title: "指定直连入口"
         modal: true
         anchors.centerIn: parent
         width: Math.min(440, window.width - 40)
@@ -85,15 +102,9 @@ ApplicationWindow {
         background: Rectangle { color: window.panel; radius: 16 }
         contentItem: ColumnLayout {
             spacing: 10
-            Label { text: "填写你自己部署的 DHT 引导节点和 TURN；留空表示仅局域网发现。"; color: window.subdued; wrapMode: Text.Wrap; Layout.fillWidth: true }
-            TextField { id: rendezvousUrl; placeholderText: "自建 DHT 节点，例如 chat.example.com:4222"; Layout.fillWidth: true }
-            TextField { id: turnHost; placeholderText: "自建 TURN 主机"; Layout.fillWidth: true }
-            RowLayout {
-                TextField { id: turnPort; text: "3478"; Layout.fillWidth: true }
-                TextField { id: turnUser; placeholderText: "TURN 用户名"; Layout.fillWidth: true }
-            }
-            TextField { id: turnPassword; placeholderText: "TURN 密码"; echoMode: TextInput.Password; Layout.fillWidth: true }
-            Button { text: "保存自建配置"; Layout.alignment: Qt.AlignRight; onClicked: { if (messenger.configureNetwork(rendezvousUrl.text, turnHost.text, Number(turnPort.text), turnUser.text, turnPassword.text)) networkSettings.close() } }
+            Label { text: "仅填写另一台设备可达的数字 IP:端口；留空则只尝试局域网发现。不会启用中继。"; color: window.subdued; wrapMode: Text.Wrap; Layout.fillWidth: true }
+            TextField { id: rendezvousUrl; placeholderText: "例如 192.168.1.2:4222"; Layout.fillWidth: true }
+            Button { text: "保存直连入口"; Layout.alignment: Qt.AlignRight; onClicked: { if (messenger.configureNetwork(rendezvousUrl.text)) networkSettings.close() } }
         }
     }
 
@@ -163,13 +174,13 @@ ApplicationWindow {
                 RowLayout {
                     Layout.fillWidth: true
                     Rectangle { width: 34; height: 34; radius: 10; color: window.accent; Label { anchors.centerIn: parent; text: "✦"; color: "#102132"; font.pixelSize: 20; font.bold: true } }
-                    Label { text: "P2P"; color: window.accent; font.bold: true; font.pixelSize: 24 }
-                    Label { text: "MESSENGER"; color: "white"; font.bold: true; font.pixelSize: 18; Layout.fillWidth: true }
+                    Label { text: "双点聊"; color: window.accent; font.bold: true; font.pixelSize: 24; Layout.fillWidth: true }
                     Rectangle { width: 10; height: 10; radius: 5; color: window.accent }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#30415d" }
                 Label { text: messenger.networkStatus; color: window.subdued; font.pixelSize: 12; wrapMode: Text.Wrap; Layout.fillWidth: true }
                 Button { text: messenger.profileName.length ? "账号：" + messenger.profileName : "设置本机账号"; Layout.fillWidth: true; onClicked: accountSettings.open() }
+                Button { text: window.pairingCopied ? "已复制，发给对方即可" : "一键复制我的配对码"; Layout.fillWidth: true; onClicked: { if (messenger.copyLocalPairingCode()) { window.pairingCopied = true; copiedReset.restart() } } }
                 Label { text: messenger.inviteCode.length ? "我的邀请码" : "邀请码尚未生成"; color: window.subdued; font.pixelSize: 12; visible: !window.mobile }
                 Label { text: messenger.inviteCode; color: "white"; font.pixelSize: 11; wrapMode: Text.WrapAnywhere; Layout.fillWidth: true; visible: !window.mobile && messenger.inviteCode.length > 0 }
                 Button { text: "复制我的邀请码"; enabled: messenger.inviteCode.length > 0; Layout.fillWidth: true; visible: !window.mobile; onClicked: messenger.copyInviteCode() }
@@ -195,8 +206,20 @@ ApplicationWindow {
                     }
                 }
                 Button { text: "+ 添加好友"; Layout.fillWidth: true; onClicked: addFriend.open() }
+                Button { text: "扫描同一 Wi-Fi 的设备"; Layout.fillWidth: true; onClicked: { window.searchedNearby = true; messenger.refreshNearbyPeers() } }
+                Label { text: "未发现设备？让对方也打开双点聊，并保持在同一 Wi-Fi。"; color: window.subdued; wrapMode: Text.Wrap; Layout.fillWidth: true; font.pixelSize: 12; visible: window.searchedNearby && messenger.nearbyPeers.length === 0 }
+                Label { text: "附近设备 · 点击添加"; color: window.accent; font.pixelSize: 12; visible: messenger.nearbyPeers.length > 0 }
+                Repeater {
+                    model: messenger.nearbyPeers
+                    delegate: Button {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        text: "添加 " + modelData.name
+                        onClicked: messenger.addNearbyPeer(modelData.uri)
+                    }
+                }
                 Button { text: "新建群聊"; Layout.fillWidth: true; onClicked: createGroup.open() }
-                Button { text: "自建网络设置（可选）"; Layout.fillWidth: true; onClicked: networkSettings.open() }
+                Button { text: "指定直连入口（可选）"; Layout.fillWidth: true; onClicked: networkSettings.open() }
                 Label { text: "消息"; color: window.subdued; font.bold: true; font.pixelSize: 12 }
                 ListView {
                     Layout.fillWidth: true

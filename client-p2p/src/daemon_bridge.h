@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <QSet>
+#include <QMap>
 #include <QString>
 #include <QStringList>
 #include "private_network_config.h"
@@ -19,6 +20,8 @@ public:
 
     QString createLocalIdentity(const QString& displayName);
     QString inviteCode(const QString& accountId) const;
+    int listeningPort(const QString& accountId) const;
+    QMap<QString, QString> nearbyPeers(const QString& accountId) const;
     bool setIdentityAlias(const QString& accountId, const QString& alias);
     bool addVerifiedContact(const QString& accountId, const QString& contactUri);
     QString createEmptyConversation(const QString& accountId);
@@ -41,6 +44,8 @@ signals:
     void incomingMessage(const QString& conversationId, const QString& body,
                          const QString& interactionId, bool outgoing);
     void identityChanged(const QString& accountId, const QString& inviteCode);
+    void nearbyPeerChanged(const QString& accountId, const QString& peerUri,
+                           const QString& displayName, bool present);
     void friendRequestReceived(const QString& accountId, const QString& contactUri);
     void groupRequestReceived(const QString& accountId, const QString& conversationId);
     void contactConfirmed(const QString& accountId, const QString& contactUri, bool confirmed);

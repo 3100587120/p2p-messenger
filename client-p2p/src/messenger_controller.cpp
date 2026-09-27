@@ -8,6 +8,10 @@
 #include <QClipboard>
 #include <QStandardPaths>
 #include <QUrl>
+#include <QUrlQuery>
+#include <QHostAddress>
+#include <QNetworkInterface>
+#include <QRegularExpression>
 #include <QUuid>
 #include <QTimer>
 #ifdef Q_OS_ANDROID
@@ -22,6 +26,53 @@ QVariantMap contact(const QString& id, const QString& name, const QString& statu
             {QStringLiteral("name"), name},
             {QStringLiteral("initial"), name.left(1).toUpper()},
             {QStringLiteral("status"), status}};
+}
+
+QString numericEndpoint(const QString& input)
+{
+    const auto value = input.trimmed();
+    if (value.contains(QLatin1Char('%'))) return {};
+    QString host;
+    QString portText;
+    if (value.startsWith(QLatin1Char('['))) {
+        const auto end = value.indexOf(QStringLiteral("]:"));
+        if (end < 0) return {};
+        host = value.mid(1, end - 1);
+        portText = value.mid(end + 2);
+    } else {
+        const auto separator = value.lastIndexOf(QLatin1Char(':'));
+        if (separator < 0) return {};
+        host = value.left(separator);
+        portText = value.mid(separator + 1);
+    }
+    static const QRegularExpression digits(QStringLiteral("^[0-9]{1,5}$"));
+    if (!digits.match(portText).hasMatch()) return {};
+    const auto port = portText.toInt();
+    if (port < 1 || port > 65535) return {};
+    QHostAddress address;
+    if (!address.setAddress(host)) return {};
+    if (address.isLoopback() || address.isMulticast() ||
+        address == QHostAddress::AnyIPv4 || address == QHostAddress::AnyIPv6) return {};
+    if (address.protocol() == QAbstractSocket::IPv6Protocol)
+        return QStringLiteral("[%1]:%2").arg(address.toString()).arg(port);
+    return QStringLiteral("%1:%2").arg(address.toString()).arg(port);
+}
+
+bool decodePairingCode(const QString& code, QString* peer, QString* endpoint, QString* name)
+{
+    const QUrl url(code, QUrl::StrictMode);
+    if (!url.isValid() || url.scheme() != QStringLiteral("p2pm") ||
+        url.host() != QStringLiteral("pair") || !url.path().isEmpty()) return false;
+    const QUrlQuery query(url);
+    if (query.queryItemValue(QStringLiteral("v")) != QStringLiteral("1")) return false;
+    const auto id = query.queryItemValue(QStringLiteral("peer"));
+    static const QRegularExpression identity(QStringLiteral("^[0-9a-fA-F]{40}$"));
+    const auto address = numericEndpoint(query.queryItemValue(QStringLiteral("node")));
+    if (!identity.match(id).hasMatch() || address.isEmpty()) return false;
+    *peer = id.toLower();
+    *endpoint = address;
+    *name = query.queryItemValue(QStringLiteral("name")).trimmed().left(64);
+    return true;
 }
 }
 
@@ -129,6 +180,20 @@ MessengerController::MessengerController(QObject* parent)
                 if (accountId != accountId_ || code == inviteCode_) return;
                 inviteCode_ = code;
                 emit inviteCodeChanged();
+                emit pairingCodeChanged();
+            });
+    connect(&daemon_, &DaemonBridge::nearbyPeerChanged, this,
+            [this](const QString& accountId, const QString& uri,
+                   const QString& name, bool present) {
+                if (accountId != accountId_ || uri == inviteCode_) return;
+                for (qsizetype i = nearbyPeers_.size(); i-- > 0;) {
+                    if (nearbyPeers_.at(i).toMap().value(QStringLiteral("uri")).toString() == uri)
+                        nearbyPeers_.removeAt(i);
+                }
+                if (present)
+                    nearbyPeers_.append(QVariantMap {{QStringLiteral("uri"), uri},
+                                                      {QStringLiteral("name"), name.isEmpty() ? uri.left(8) : name}});
+                emit nearbyPeersChanged();
             });
     connect(&daemon_, &DaemonBridge::friendRequestReceived, this,
             [this](const QString& accountId, const QString& contactUri) {
@@ -188,50 +253,69 @@ MessengerController::MessengerController(QObject* parent)
     } else {
         networkStatus_ = tr("通信内核未启动");
     }
-    auto* identityRefresh = new QTimer(this);
-    identityRefresh->setInterval(2000);
-    connect(identityRefresh, &QTimer::timeout, this, [this, identityRefresh] {
-        if (accountId_.isEmpty() || !inviteCode_.isEmpty()) {
-            identityRefresh->stop();
+    identityRefresh_ = new QTimer(this);
+    identityRefresh_->setInterval(2000);
+    connect(identityRefresh_, &QTimer::timeout, this, [this] {
+        if (accountId_.isEmpty()) {
+            identityRefresh_->stop();
             return;
         }
-        const auto code = daemon_.inviteCode(accountId_);
-        if (!code.isEmpty()) {
+        const auto port = daemon_.listeningPort(accountId_);
+        if (port != listeningPort_) {
+            listeningPort_ = port;
+            emit listeningPortChanged();
+        }
+        const auto code = inviteCode_.isEmpty() ? daemon_.inviteCode(accountId_) : QString {};
+        if (!code.isEmpty() && inviteCode_.isEmpty()) {
             inviteCode_ = code;
             emit inviteCodeChanged();
-            identityRefresh->stop();
+            emit pairingCodeChanged();
         }
+        if (!inviteCode_.isEmpty() && listeningPort_ > 0) identityRefresh_->stop();
     });
-    if (!accountId_.isEmpty() && inviteCode_.isEmpty()) identityRefresh->start();
+    if (!accountId_.isEmpty()) identityRefresh_->start();
     const auto savedProfile = vault_.loadConversation(QStringLiteral("__profile"));
     if (!savedProfile.isEmpty()) {
         const auto profile = savedProfile.first().toMap();
         if (profile.value(QStringLiteral("accountId")).toString() == accountId_) {
             profileName_ = profile.value(QStringLiteral("profileName")).toString();
+            directEndpoint_ = numericEndpoint(profile.value(QStringLiteral("directEndpoint")).toString());
             contacts_ = profile.value(QStringLiteral("contacts")).toList();
             const auto network = profile.value(QStringLiteral("network")).toMap();
-            networkConfig_.bootstrapNode = network.value(QStringLiteral("bootstrapNode")).toString();
+            QStringList verifiedNodes;
+            for (const auto& savedNode : network.value(QStringLiteral("bootstrapNode")).toString()
+                                             .split(QLatin1Char(';'), Qt::SkipEmptyParts)) {
+                const auto node = numericEndpoint(savedNode);
+                if (!node.isEmpty() && !verifiedNodes.contains(node)) verifiedNodes.append(node);
+            }
+            networkConfig_.bootstrapNode = verifiedNodes.join(QLatin1Char(';'));
             networkConfig_.turnHost = network.value(QStringLiteral("turnHost")).toString();
             networkConfig_.turnPort = static_cast<quint16>(network.value(QStringLiteral("turnPort"), 3478).toUInt());
             networkConfig_.turnUser = network.value(QStringLiteral("turnUser")).toString();
             networkConfig_.turnPassword = network.value(QStringLiteral("turnPassword")).toString();
+            networkConfig_.turnHost.clear();
+            networkConfig_.turnUser.clear();
+            networkConfig_.turnPassword.clear();
         }
     }
     if (!accountId_.isEmpty() && networkConfig_.isValid()) {
         daemon_.configurePrivateNetwork(accountId_, networkConfig_);
         if (!networkConfig_.isEmpty())
-            networkStatus_ = tr("已设置自建引导节点 — 直连优先");
+            networkStatus_ = tr("仅连接已配对设备 — 不使用中继");
     }
+    if (!accountId_.isEmpty() && !profileName_.isEmpty())
+        daemon_.setIdentityAlias(accountId_, profileName_);
     if (contacts_.isEmpty())
         contacts_.append(contact(QStringLiteral("welcome"), tr("开始使用"), tr("本设备")));
     if (!accountId_.isEmpty())
         pendingRequests_ = daemon_.pendingFriendRequests(accountId_);
     if (!accountId_.isEmpty())
         pendingGroupRequests_ = daemon_.pendingGroupRequests(accountId_);
+    refreshNearbyPeers();
     activeContactId_ = QStringLiteral("welcome");
     messages_ = vault_.loadConversation(activeContactId_);
     if (messages_.isEmpty())
-        appendMessage(tr("欢迎使用 P2P Messenger。创建或扫描好友邀请码后，即可建立端到端加密连接。"), false);
+        appendMessage(tr("欢迎使用双点聊。扫描附近设备或粘贴双机配对码，即可尝试端到端连接。"), false);
 }
 
 MessengerController::~MessengerController()
@@ -247,6 +331,24 @@ QString MessengerController::networkStatus() const { return networkStatus_; }
 QString MessengerController::inviteCode() const { return inviteCode_; }
 QString MessengerController::accountId() const { return accountId_; }
 QString MessengerController::profileName() const { return profileName_; }
+QString MessengerController::directEndpoint() const { return directEndpoint_; }
+int MessengerController::listeningPort() const { return listeningPort_; }
+QVariantList MessengerController::nearbyPeers() const { return nearbyPeers_; }
+QString MessengerController::pairingCode() const
+{
+    if (inviteCode_.isEmpty()) return {};
+    if (directEndpoint_.isEmpty()) return inviteCode_;
+    QUrl url;
+    url.setScheme(QStringLiteral("p2pm"));
+    url.setHost(QStringLiteral("pair"));
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("v"), QStringLiteral("1"));
+    query.addQueryItem(QStringLiteral("peer"), inviteCode_);
+    query.addQueryItem(QStringLiteral("node"), directEndpoint_);
+    if (!profileName_.isEmpty()) query.addQueryItem(QStringLiteral("name"), profileName_);
+    url.setQuery(query);
+    return url.toString(QUrl::FullyEncoded);
+}
 QString MessengerController::lastError() const { return lastError_; }
 QStringList MessengerController::pendingRequests() const { return pendingRequests_; }
 QStringList MessengerController::pendingGroupRequests() const { return pendingGroupRequests_; }
@@ -266,6 +368,7 @@ bool MessengerController::setProfileName(const QString& name)
     saveProfile();
     setError({});
     emit profileNameChanged();
+    emit pairingCodeChanged();
     return true;
 }
 
@@ -278,6 +381,7 @@ bool MessengerController::retryIdentity()
         }
         accountId_ = daemon_.createLocalIdentity(profileName_.isEmpty() ? tr("我的设备") : profileName_);
         emit accountIdChanged();
+        if (!accountId_.isEmpty() && identityRefresh_) identityRefresh_->start();
     }
     if (accountId_.isEmpty()) {
         setError(tr("创建本机账号失败"));
@@ -287,9 +391,80 @@ bool MessengerController::retryIdentity()
     if (!code.isEmpty() && code != inviteCode_) {
         inviteCode_ = code;
         emit inviteCodeChanged();
+        emit pairingCodeChanged();
     }
     setError(inviteCode_.isEmpty() ? tr("账号已创建，邀请码仍在生成；请稍后重试") : QString {});
     return !inviteCode_.isEmpty();
+}
+
+bool MessengerController::setDirectEndpoint(const QString& endpoint)
+{
+    const auto normalized = endpoint.trimmed().isEmpty() ? QString {} : numericEndpoint(endpoint);
+    if (!endpoint.trimmed().isEmpty() && normalized.isEmpty()) {
+        setError(tr("请填写可达的数字 IP:端口，例如 192.168.1.2:4222；IPv6 须加方括号"));
+        return false;
+    }
+    if (directEndpoint_ != normalized) {
+        directEndpoint_ = normalized;
+        saveProfile();
+        emit directEndpointChanged();
+        emit pairingCodeChanged();
+    }
+    setError({});
+    return true;
+}
+
+bool MessengerController::useLocalNetworkAddress()
+{
+    if (listeningPort_ < 1) {
+        setError(tr("本机监听端口尚未就绪，请稍后重试"));
+        return false;
+    }
+    for (const auto& address : QNetworkInterface::allAddresses()) {
+        if (address.protocol() != QAbstractSocket::IPv4Protocol || address.isLoopback()) continue;
+        const auto privateAddress = address.isInSubnet(QHostAddress(QStringLiteral("10.0.0.0")), 8) ||
+                                    address.isInSubnet(QHostAddress(QStringLiteral("172.16.0.0")), 12) ||
+                                    address.isInSubnet(QHostAddress(QStringLiteral("192.168.0.0")), 16);
+        if (privateAddress)
+            return setDirectEndpoint(QStringLiteral("%1:%2").arg(address.toString()).arg(listeningPort_));
+    }
+    setError(tr("未找到本机局域网 IPv4 地址，请手动填写"));
+    return false;
+}
+
+void MessengerController::copyPairingCode()
+{
+    if (!pairingCode().isEmpty()) QGuiApplication::clipboard()->setText(pairingCode());
+}
+
+bool MessengerController::copyLocalPairingCode()
+{
+    if (!useLocalNetworkAddress() || pairingCode().isEmpty()) return false;
+    copyPairingCode();
+    return true;
+}
+
+void MessengerController::refreshNearbyPeers()
+{
+    nearbyPeers_.clear();
+    const auto discovered = daemon_.nearbyPeers(accountId_);
+    for (auto it = discovered.cbegin(); it != discovered.cend(); ++it) {
+        if (it.key() == inviteCode_) continue;
+        nearbyPeers_.append(QVariantMap {{QStringLiteral("uri"), it.key()},
+                                          {QStringLiteral("name"), it.value().isEmpty() ? it.key().left(8) : it.value()}});
+    }
+    emit nearbyPeersChanged();
+}
+
+bool MessengerController::addNearbyPeer(const QString& peerUri)
+{
+    for (const auto& value : nearbyPeers_) {
+        const auto peer = value.toMap();
+        if (peer.value(QStringLiteral("uri")).toString() == peerUri)
+            return addContact(peer.value(QStringLiteral("name")).toString(), peerUri);
+    }
+    setError(tr("附近设备已离线，请重新扫描"));
+    return false;
 }
 
 void MessengerController::selectContact(const QString& contactId)
@@ -304,31 +479,78 @@ void MessengerController::selectContact(const QString& contactId)
 
 bool MessengerController::addContact(const QString& name, const QString& invite)
 {
-    const auto trimmedName = name.trimmed();
-    if (trimmedName.isEmpty() || invite.trimmed().isEmpty())
+    if (invite.trimmed().isEmpty())
         return false;
     if (accountId_.isEmpty() || inviteCode_.isEmpty()) {
         setError(tr("本机身份仍在生成，稍后再添加好友"));
         return false;
     }
-    if (!daemon_.addVerifiedContact(accountId_, invite.trimmed())) {
+    auto peerCode = invite.trimmed();
+    QString peerEndpoint;
+    QString peerName;
+    if (peerCode.startsWith(QStringLiteral("p2pm:"))) {
+        if (!decodePairingCode(peerCode, &peerCode, &peerEndpoint, &peerName)) {
+            setError(tr("双机配对码格式无效"));
+            return false;
+        }
+    }
+    static const QRegularExpression identity(QStringLiteral("^[0-9a-fA-F]{40}$"));
+    if (!identity.match(peerCode).hasMatch()) {
+        setError(tr("请输入 40 位设备邀请码或完整双机配对码"));
+        return false;
+    }
+    peerCode = peerCode.toLower();
+    if (peerCode.compare(inviteCode_, Qt::CaseInsensitive) == 0) {
+        setError(tr("不能添加自己的账号"));
+        return false;
+    }
+    const auto trimmedName = name.trimmed().isEmpty()
+        ? (peerName.isEmpty() ? tr("好友 %1").arg(peerCode.left(8)) : peerName)
+        : name.trimmed();
+    if (!peerEndpoint.isEmpty()) {
+        auto directConfig = networkConfig_;
+        auto nodes = directConfig.bootstrapNode.split(QLatin1Char(';'), Qt::SkipEmptyParts);
+        if (!nodes.contains(peerEndpoint)) nodes.append(peerEndpoint);
+        directConfig.bootstrapNode = nodes.join(QLatin1Char(';'));
+        directConfig.turnHost.clear();
+        directConfig.turnUser.clear();
+        directConfig.turnPassword.clear();
+        if (!daemon_.configurePrivateNetwork(accountId_, directConfig)) {
+            setError(tr("无法应用对方设备的直连地址"));
+            return false;
+        }
+        networkConfig_ = directConfig;
+        networkStatus_ = tr("已配置 %1 台直连设备 — 不使用中继").arg(nodes.size());
+        emit networkStatusChanged();
+        saveProfile();
+    }
+    for (const auto& value : contacts_) {
+        const auto existing = value.toMap();
+        if (existing.value(QStringLiteral("uri")).toString() == peerCode) {
+            selectContact(existing.value(QStringLiteral("id")).toString());
+            setError({});
+            return true;
+        }
+    }
+    if (!daemon_.addVerifiedContact(accountId_, peerCode)) {
         setError(tr("好友申请未能提交"));
         return false;
     }
-    const auto conversationId = daemon_.createConversation(accountId_, invite.trimmed());
+    const auto conversationId = daemon_.createConversation(accountId_, peerCode);
     if (conversationId.isEmpty()) {
         setError(tr("无法创建私聊会话"));
         return false;
     }
     const auto id = QUuid::createUuid().toString(QUuid::WithoutBraces);
     auto entry = contact(id, trimmedName, tr("等待对方确认"));
-    entry.insert(QStringLiteral("uri"), invite.trimmed());
+    entry.insert(QStringLiteral("uri"), peerCode);
     entry.insert(QStringLiteral("conversationId"), conversationId);
     entry.insert(QStringLiteral("ready"), false);
     contacts_.append(entry);
     saveProfile();
     emit contactsChanged();
     selectContact(id);
+    setError({});
     return true;
 }
 
@@ -340,6 +562,14 @@ bool MessengerController::createGroup(const QString& name, const QStringList& me
     if (accountId_.isEmpty() || inviteCode_.isEmpty()) {
         setError(tr("本机身份仍在生成，稍后再创建群聊"));
         return false;
+    }
+    static const QRegularExpression identity(QStringLiteral("^[0-9a-fA-F]{40}$"));
+    for (const auto& uri : memberUris) {
+        const auto member = uri.trimmed();
+        if (!member.isEmpty() && !identity.match(member).hasMatch()) {
+            setError(tr("群成员邀请码必须是 40 位设备 ID"));
+            return false;
+        }
     }
     const auto id = QUuid::createUuid().toString(QUuid::WithoutBraces);
     const auto conversationId = daemon_.createEmptyConversation(accountId_);
@@ -519,14 +749,15 @@ bool MessengerController::acceptGroupRequest(const QString& conversationId)
     return true;
 }
 
-bool MessengerController::configureNetwork(const QString& rendezvous, const QString& turnHost,
-                                            int turnPort, const QString& user, const QString& password)
+bool MessengerController::configureNetwork(const QString& rendezvous)
 {
-    if (turnPort < 1 || turnPort > 65535) {
-        setError(tr("TURN 端口必须在 1 到 65535 之间"));
+    const auto normalized = rendezvous.trimmed().isEmpty() ? QString {} : numericEndpoint(rendezvous);
+    if (!rendezvous.trimmed().isEmpty() && normalized.isEmpty()) {
+        setError(tr("直连入口须为数字 IP:端口"));
         return false;
     }
-    PrivateNetworkConfig config {rendezvous.trimmed(), turnHost.trimmed(), static_cast<quint16>(turnPort), user, password};
+    PrivateNetworkConfig config;
+    config.bootstrapNode = normalized;
     QString reason;
     if (!config.isValid(&reason)) {
         setError(reason);
@@ -538,8 +769,9 @@ bool MessengerController::configureNetwork(const QString& rendezvous, const QStr
     }
     networkConfig_ = config;
     saveProfile();
-    networkStatus_ = config.isEmpty() ? tr("仅局域网发现") : tr("已设置自建引导节点 — 直连优先");
+    networkStatus_ = config.isEmpty() ? tr("仅局域网发现") : tr("仅尝试连接指定设备 — 不使用中继");
     emit networkStatusChanged();
+    setError({});
     return true;
 }
 
@@ -576,6 +808,7 @@ void MessengerController::saveProfile()
     vault_.saveConversation(QStringLiteral("__profile"),
                             {QVariantMap {{QStringLiteral("accountId"), accountId_},
                                           {QStringLiteral("profileName"), profileName_},
+                                          {QStringLiteral("directEndpoint"), directEndpoint_},
                                           {QStringLiteral("contacts"), contacts_},
                                           {QStringLiteral("network"), QVariantMap {
                                                {QStringLiteral("bootstrapNode"), networkConfig_.bootstrapNode},

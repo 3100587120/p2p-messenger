@@ -16,7 +16,7 @@ $contrib = Join-Path $daemon 'contrib/aarch64-linux-android'
 $daemonBuild = Join-Path $BuildRoot 'daemon-android-arm64-v5'
 $enginePackage = Join-Path $BuildRoot 'android-engine-package/libjami-core.so'
 $appBuild = Join-Path $BuildRoot 'client-p2p-android-debug'
-$dist = Join-Path $repo 'dist/P2P-Messenger-Android-arm64-Private-Engine-debug.apk'
+$dist = Join-Path $repo 'dist/ShuangDianLiao-Android-arm64-Direct-debug.apk'
 
 foreach ($required in @($cmake, (Join-Path $jdk 'bin/java.exe'),
                        (Join-Path $contrib 'lib/libyrs.a'),

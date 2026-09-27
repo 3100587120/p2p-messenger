@@ -76,6 +76,9 @@ std::map<std::string, std::string> accountDetails(const std::string& bootstrap)
             {"Account.bootstrapListUrl", ""},
             {"Account.dhtProxyListUrl", ""},
             {"Account.proxyEnabled", "false"},
+            {"Account.peerDiscovery", "true"},
+            {"Account.accountDiscovery", "true"},
+            {"Account.accountPublish", "true"},
             {"Account.upnpEnabled", "false"},
             {"STUN.enable", "false"},
             {"TURN.enable", "false"},
@@ -86,7 +89,7 @@ std::map<std::string, std::string> accountDetails(const std::string& bootstrap)
 int main(int argc, char** argv)
 {
     if (argc != 3) {
-        std::cerr << "usage: P2PMessengerDaemonE2E <test-data-root> <private-bootstrap-host:port>\n";
+        std::cerr << "usage: P2PMessengerDaemonE2E <test-data-root> <private-bootstrap-host:port|--direct>\n";
         return 2;
     }
     const auto root = std::filesystem::path(argv[1]);
@@ -140,8 +143,25 @@ int main(int argc, char** argv)
         finish();
         return 1;
     }
-    const auto alice = DRing::addAccount(accountDetails(argv[2]));
-    const auto bob = DRing::addAccount(accountDetails(argv[2]));
+    const bool direct = std::string_view(argv[2]) == "--direct";
+    auto aliceDetails = accountDetails(direct ? "" : argv[2]);
+    if (direct) aliceDetails["DHT.port"] = "4222";
+    const auto alice = DRing::addAccount(aliceDetails);
+    std::string bobBootstrap = argv[2];
+    if (direct) {
+        if (!waitFor([&] { return !username(alice).empty(); }, 45s)) {
+            std::cerr << "first peer did not create its identity\n";
+            finish();
+            return 1;
+        }
+        // A lone node may remain TRYING until another node joins it.
+        std::this_thread::sleep_for(2s);
+        bobBootstrap = "127.0.0.1:4222";
+        std::cout << "bootstrapping second peer directly from first: " << bobBootstrap << '\n';
+    }
+    auto bobDetails = accountDetails(bobBootstrap);
+    if (direct) bobDetails["DHT.port"] = "4224";
+    const auto bob = DRing::addAccount(bobDetails);
     if (alice.empty() || bob.empty() ||
         !waitFor([&] { return !username(alice).empty() && !username(bob).empty(); }, 45s)) {
         std::cerr << "identity creation timed out\n";
@@ -159,6 +179,20 @@ int main(int argc, char** argv)
         return 1;
     }
     std::cout << "DHT registered\n";
+    if (direct) {
+        const auto first = DRing::getAccountDetails(alice);
+        const auto second = DRing::getAccountDetails(bob);
+        if (first.at("Account.hostname") != "" ||
+            second.at("Account.hostname") != bobBootstrap ||
+            first.at("TURN.enable") != "false" ||
+            second.at("TURN.enable") != "false" ||
+            first.at("Account.proxyEnabled") != "false" ||
+            second.at("Account.proxyEnabled") != "false") {
+            std::cerr << "direct test unexpectedly configured an intermediary\n";
+            finish();
+            return 1;
+        }
+    }
     DRing::sendTrustRequest(alice, bobUri);
     std::string requestFrom;
     bool liveRequestSignal = false;
