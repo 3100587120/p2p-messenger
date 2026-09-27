@@ -90,6 +90,20 @@ ApplicationWindow {
     }
 
     Dialog {
+        id: requestSubmittedDialog
+        title: "好友申请已提交"
+        modal: true
+        anchors.centerIn: parent
+        width: Math.min(420, window.width - 32)
+        standardButtons: Dialog.Ok
+        background: Rectangle { color: window.panel; radius: 18 }
+        contentItem: Label {
+            text: "申请已从本机提交，尚不能确认对方收到。请让对方保持应用打开并查看好友申请；跨网时双方都需开启辅助连接。"
+            color: "white"; wrapMode: Text.Wrap; padding: 18
+        }
+    }
+
+    Dialog {
         id: accountSettings
         title: "本机账号"
         modal: true
@@ -164,7 +178,7 @@ ApplicationWindow {
                     required property var modelData
                     text: "添加 " + modelData.name
                     Layout.fillWidth: true
-                    onClicked: { if (messenger.addNearbyPeer(modelData.uri)) addFriend.close() }
+                    onClicked: { if (messenger.addNearbyPeer(modelData.uri)) { addFriend.close(); requestSubmittedDialog.open() } }
                 }
             }
             Label { text: "暂无附近设备，可粘贴配对码"; color: window.subdued; visible: messenger.nearbyPeers.length === 0; Layout.fillWidth: true }
@@ -175,7 +189,7 @@ ApplicationWindow {
                 text: "发送好友申请"
                 enabled: invite.text.trim().length > 0
                 Layout.alignment: Qt.AlignRight
-                onClicked: { if (messenger.addContact(friendName.text, invite.text)) addFriend.close() }
+                onClicked: { if (messenger.addContact(friendName.text, invite.text)) { addFriend.close(); requestSubmittedDialog.open() } }
             }
             }
         }

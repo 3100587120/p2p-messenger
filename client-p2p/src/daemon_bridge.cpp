@@ -130,8 +130,17 @@ bool DaemonBridge::start()
                         }, Qt::QueuedConnection);
                 }),
             DRing::exportable_callback<DRing::ConfigurationSignal::IncomingTrustRequest>(
-                [this](const std::string& accountId, const std::string& from,
-                       const std::string& conversationId, const std::vector<uint8_t>&, time_t) {
+                [this](const std::string& accountId, const std::string& first,
+                       const std::string& second, const std::vector<uint8_t>&, time_t) {
+#if defined(Q_OS_ANDROID)
+                    // New libjami: account, conversationId, from.
+                    const auto& conversationId = first;
+                    const auto& from = second;
+#else
+                    // Older Windows DRing: account, from, conversationId.
+                    const auto& from = first;
+                    const auto& conversationId = second;
+#endif
                     QMetaObject::invokeMethod(this,
                         [this, id = QString::fromStdString(accountId),
                          uri = QString::fromStdString(from),
