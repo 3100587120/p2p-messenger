@@ -71,6 +71,7 @@ if ($BuildE2E) {
     Invoke-CMake @('--build', $buildRoot, '--config', 'Release', '--target', 'P2PMessengerDaemonE2E', '--parallel', '1', '--', '/nr:false')
 }
 if ($BuildRelayTests) {
+    Invoke-CMake @('--build', $buildRoot, '--config', 'Release', '--target', 'P2PMessengerFriendFlowTest', '--parallel', '1', '--', '/nr:false')
     Invoke-CMake @('--build', $buildRoot, '--config', 'Release', '--target', 'P2PMessengerRelayCryptoTest', '--parallel', '1', '--', '/nr:false')
     Invoke-CMake @('--build', $buildRoot, '--config', 'Release', '--target', 'P2PMessengerRelayClientTest', '--parallel', '1', '--', '/nr:false')
 }

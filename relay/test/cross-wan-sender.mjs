@@ -26,22 +26,31 @@ const derive = (from, to) => createHash('sha256').update(Buffer.concat([
 ])).digest();
 const aad = (id, from, to) => Buffer.from(`SD1|${id}|${from}|${to}`);
 const packetId = randomUUID();
+function seal(message, id) {
 const nonce = randomBytes(12);
 const cipher = createCipheriv('aes-256-gcm', derive(senderPublic, receiverPublic), nonce);
-cipher.setAAD(aad(packetId, senderId, receiverId));
-const payload = Buffer.from(JSON.stringify({ type: 'friend_request', probe: 'cross_wan' }));
+cipher.setAAD(aad(id, senderId, receiverId));
+const payload = Buffer.from(JSON.stringify(message));
 const ciphertext = Buffer.concat([cipher.update(payload), cipher.final(), cipher.getAuthTag()]);
-const envelope = Buffer.from(JSON.stringify({
+return Buffer.from(JSON.stringify({
   v: 1,
   pk: senderPublic.toString('base64url'),
   nonce: nonce.toString('base64url'),
   ct: ciphertext.toString('base64url'),
 })).toString('base64url');
+}
+const envelope = seal({ type: 'friend_request', probe: 'cross_wan', name: 'Cloud test' }, packetId);
+const controllerMode = process.env.CONTROLLER_TEST === '1';
+let requestAck = false, accepted = false, gotText = false, textAck = false;
+const textId = randomUUID();
 
 const url = new URL(endpoint);
 url.pathname = '/connect';
 url.searchParams.set('id', senderId);
 const socket = new WebSocket(url);
+function send(message, id = randomUUID()) {
+  socket.send(JSON.stringify({ op: 'send', id, to: receiverId, envelope: seal(message, id) }));
+}
 const timeout = setTimeout(() => {
   console.error('Timed out waiting for encrypted acknowledgement from remote client');
   socket.close();
@@ -75,7 +84,26 @@ socket.addEventListener('message', (event) => {
     const ack = JSON.parse(Buffer.concat([
       decipher.update(encrypted.subarray(0, -16)), decipher.final(),
     ]).toString());
-    assert.deepEqual(ack, { type: 'ack', id: packetId });
+    if (controllerMode) {
+      if (ack.type === 'ack') {
+        if (ack.id === packetId) requestAck = true;
+        if (ack.id === textId) textAck = true;
+      } else {
+        send({ type: 'ack', id: frame.id });
+        if (ack.type === 'friend_accept') {
+          accepted = true;
+          send({ type: 'text', body: 'cloud-to-controller' }, textId);
+        }
+        if (ack.type === 'text') {
+          assert.equal(ack.body, 'controller-to-cloud');
+          gotText = true;
+        }
+      }
+      if (!(requestAck && accepted && gotText && textAck)) return;
+      console.log('PASS: application controller persisted friend request, accepted it, and exchanged messages in both directions');
+    } else {
+      assert.deepEqual(ack, { type: 'ack', id: packetId });
+    }
     console.log('PASS: remote client received request and returned authenticated E2EE acknowledgement');
     clearTimeout(timeout);
     socket.close();

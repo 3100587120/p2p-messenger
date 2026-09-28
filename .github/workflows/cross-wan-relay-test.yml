@@ -7,6 +7,11 @@ on:
         description: Ephemeral invitation from the local test receiver
         required: true
         type: string
+      controller_test:
+        description: Test application friend acceptance and bidirectional messages
+        required: false
+        default: '0'
+        type: string
 
 permissions:
   contents: read
@@ -23,5 +28,6 @@ jobs:
       - name: Send encrypted friend request to receiver on a separate network
         env:
           RECEIVER_INVITE_CODE: ${{ inputs.receiver_invite_code }}
+          CONTROLLER_TEST: ${{ inputs.controller_test }}
           RELAY_TEST_URL: wss://shuangdianliao-relay.plastic-gojirasaurus.workers.dev
         run: node relay/test/cross-wan-sender.mjs
