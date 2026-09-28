@@ -10,6 +10,55 @@
 
 #include <iostream>
 
+static int inspectProfile(QCoreApplication& app, const QString& profileRoot)
+{
+    qputenv("P2P_MESSENGER_DATA_ROOT", profileRoot.toUtf8());
+    LocalVault original;
+    const auto profiles = original.loadConversation(QStringLiteral("__profile"));
+    if (!original.isReady() || profiles.isEmpty()) return 6;
+    const auto profile = profiles.first().toMap();
+    const auto network = profile.value(QStringLiteral("network")).toMap();
+    const auto contacts = profile.value(QStringLiteral("contacts")).toList();
+    std::cout << "assisted=" << network.value(QStringLiteral("assistedConnection")).toBool()
+              << " endpoint=" << network.value(QStringLiteral("relayEndpoint")).toString().toStdString()
+              << " contacts=" << contacts.size()
+              << " pending=" << profile.value(QStringLiteral("pendingRelayRequests")).toMap().size()
+              << " outbox=" << original.loadConversation(QStringLiteral("__relay_outbox")).size() << std::endl;
+    QTemporaryDir temporary(QDir::tempPath() + QStringLiteral("/relay-profile-probe-XXXXXX"));
+    if (!temporary.isValid()) return 2;
+    qputenv("P2P_MESSENGER_DATA_ROOT", temporary.path().toUtf8());
+    LocalVault scratch;
+    RelayClient probe(scratch);
+    QMap<QString, QString> targets;
+    bool started = false;
+    QObject::connect(&probe, &RelayClient::connectedChanged, &app, [&](bool connected) {
+        std::cout << "probe_connected=" << connected << std::endl;
+        if (!connected || started) return;
+        started = true;
+        for (const auto& value : contacts) {
+            const auto contact = value.toMap();
+            if (contact.value(QStringLiteral("transport")).toString() != QStringLiteral("relay")) continue;
+            const auto key = RelayClient::publicKeyFromCode(contact.value(QStringLiteral("relayPublic")).toString());
+            const auto fingerprint = RelayClient::idForPublicKey(key).left(12);
+            const auto id = probe.send(key, QJsonObject {{QStringLiteral("type"), QStringLiteral("probe")}});
+            targets.insert(id, fingerprint);
+            std::cout << "peer=" << fingerprint.toStdString() << " ready="
+                      << contact.value(QStringLiteral("ready")).toBool() << std::endl;
+        }
+    });
+    QObject::connect(&probe, &RelayClient::deliveryState, &app, [&](const QString& id, const QString& state) {
+        if (targets.contains(id))
+            std::cout << "peer=" << targets.value(id).toStdString() << " state=" << state.toStdString() << std::endl;
+    });
+    QObject::connect(&probe, &RelayClient::errorOccurred, &app,
+        [](const QString& error) { std::cerr << error.toStdString() << std::endl; });
+    probe.setEndpoint(QUrl(network.value(QStringLiteral("relayEndpoint")).toString()));
+    probe.setEnabled(true);
+    QTimer::singleShot(25000, &app, &QCoreApplication::quit);
+    app.exec();
+    return 0;
+}
+
 static int runRemoteReceiver(QCoreApplication& app)
 {
     QTemporaryDir root(QDir::tempPath() + QStringLiteral("/relay-remote-test-XXXXXX"));
@@ -42,6 +91,8 @@ static int runRemoteReceiver(QCoreApplication& app)
 int main(int argc, char** argv)
 {
     QCoreApplication app(argc, argv);
+    if (!qEnvironmentVariable("P2P_MESSENGER_RELAY_PROFILE_ROOT").isEmpty())
+        return inspectProfile(app, qEnvironmentVariable("P2P_MESSENGER_RELAY_PROFILE_ROOT"));
     if (qEnvironmentVariableIsSet("P2P_MESSENGER_RELAY_TEST_REMOTE_RECEIVER"))
         return runRemoteReceiver(app);
     QTemporaryDir root(QDir::tempPath() + QStringLiteral("/relay-client-test-XXXXXX"));
