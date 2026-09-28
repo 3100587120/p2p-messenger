@@ -1024,6 +1024,10 @@ bool MessengerController::sendMessage(const QString& body)
         if (current.value(QStringLiteral("id")).toString() != activeContactId_)
             continue;
         if (current.value(QStringLiteral("transport")).toString() == QStringLiteral("relay")) {
+            if (!assistedConnection_) {
+                setError(tr("此会话使用辅助连接。请先在本机账号中切换到辅助连接，再发送消息。"));
+                return false;
+            }
             if (current.value(QStringLiteral("group")).toBool()) {
                 int queued = 0;
                 for (const auto& code : current.value(QStringLiteral("members")).toList()) {
@@ -1101,6 +1105,10 @@ bool MessengerController::queueFile(const QString& path)
         if (current.value(QStringLiteral("id")).toString() != activeContactId_)
             continue;
         if (current.value(QStringLiteral("transport")).toString() == QStringLiteral("relay")) {
+            if (!assistedConnection_) {
+                setError(tr("此会话使用辅助连接。请先在本机账号中切换到辅助连接，再发送文件。"));
+                return false;
+            }
             if (current.value(QStringLiteral("group")).toBool()) {
                 setError(tr("辅助连接群聊暂不支持文件；请先发送给单个好友。")); return false;
             }
