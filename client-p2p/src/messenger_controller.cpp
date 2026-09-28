@@ -540,6 +540,7 @@ MessengerController::MessengerController(QObject* parent)
             contacts_ = profile.value(QStringLiteral("contacts")).toList();
             const auto network = profile.value(QStringLiteral("network")).toMap();
             assistedConnection_ = network.value(QStringLiteral("assistedConnection"), false).toBool();
+            relayEndpoint_ = network.value(QStringLiteral("relayEndpoint")).toString();
             pendingRelayRequests_ = profile.value(QStringLiteral("pendingRelayRequests")).toMap();
             pendingRelayGroups_ = profile.value(QStringLiteral("pendingRelayGroups")).toMap();
             QStringList verifiedNodes;
@@ -563,7 +564,9 @@ MessengerController::MessengerController(QObject* parent)
         networkStatus_ = assistedConnection_ ? tr("辅助连接正在建立")
                                              : tr("纯直连 — 不使用公共引导或中继");
     }
-    relay_.setEndpoint(QUrl(qEnvironmentVariable("P2P_MESSENGER_RELAY_URL")));
+    const auto environmentRelay = qEnvironmentVariable("P2P_MESSENGER_RELAY_URL").trimmed();
+    if (!environmentRelay.isEmpty()) relayEndpoint_ = environmentRelay;
+    relay_.setEndpoint(QUrl(relayEndpoint_));
     const auto savedRelayFiles = vault_.loadConversation(QStringLiteral("__relay_files"));
     if (!savedRelayFiles.isEmpty()) incomingRelayFiles_ = savedRelayFiles.first().toMap();
     relay_.setEnabled(assistedConnection_);
@@ -633,6 +636,7 @@ QString MessengerController::lastError() const { return lastError_; }
 QStringList MessengerController::pendingRequests() const { return pendingRequests_; }
 QStringList MessengerController::pendingGroupRequests() const { return pendingGroupRequests_; }
 bool MessengerController::assistedConnection() const { return assistedConnection_; }
+QString MessengerController::relayEndpoint() const { return relayEndpoint_; }
 
 bool MessengerController::setProfileName(const QString& name)
 {
@@ -1395,6 +1399,41 @@ bool MessengerController::setAssistedConnection(bool enabled)
     return true;
 }
 
+bool MessengerController::setRelayEndpoint(const QString& endpoint)
+{
+    const auto input = endpoint.trimmed();
+    const QUrl url(input, QUrl::StrictMode);
+    const bool localWs = url.scheme() == QStringLiteral("ws") &&
+                         (url.host() == QStringLiteral("localhost") ||
+                          url.host() == QStringLiteral("127.0.0.1"));
+    const bool secureRemote = url.scheme() == QStringLiteral("wss") && !url.host().isEmpty();
+    if ((!input.isEmpty() && !(localWs || secureRemote)) || !url.userInfo().isEmpty() ||
+        !url.query().isEmpty() || !url.fragment().isEmpty() ||
+        (!url.path().isEmpty() && url.path() != QStringLiteral("/"))) {
+        setError(tr("中继地址须为 wss://域名（本机测试可用 ws://localhost:端口），不要包含路径或账号。"));
+        return false;
+    }
+    if (assistedConnection_ && input.isEmpty()) {
+        setError(tr("请先切回纯直连，再清除中继地址。"));
+        return false;
+    }
+    const auto previous = relayEndpoint_;
+    relayEndpoint_ = input.isEmpty() ? QString {} : url.toString(QUrl::FullyEncoded);
+    if (!saveProfile()) {
+        relayEndpoint_ = previous;
+        setError(tr("中继地址无法保存到本机，请检查存储空间。"));
+        return false;
+    }
+    relay_.setEndpoint(QUrl(relayEndpoint_));
+    emit relayEndpointChanged();
+    if (assistedConnection_) {
+        networkStatus_ = tr("辅助连接正在接入新中继");
+        emit networkStatusChanged();
+    }
+    setError({});
+    return true;
+}
+
 void MessengerController::appendMessage(const QString& body, bool outgoing, const QString& kind)
 {
     appendMessageForContact(activeContactId_, body, outgoing, kind);
@@ -1435,6 +1474,7 @@ bool MessengerController::saveProfile()
                                           {QStringLiteral("pendingRelayGroups"), pendingRelayGroups_},
                                           {QStringLiteral("network"), QVariantMap {
                                                {QStringLiteral("assistedConnection"), assistedConnection_},
+                                               {QStringLiteral("relayEndpoint"), relayEndpoint_},
                                                {QStringLiteral("bootstrapNode"), networkConfig_.bootstrapNode},
                                                {QStringLiteral("turnHost"), networkConfig_.turnHost},
                                                {QStringLiteral("turnPort"), networkConfig_.turnPort},

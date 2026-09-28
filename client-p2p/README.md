@@ -79,9 +79,17 @@ It is a third-party service in Assisted mode; switching back disables its
 WebSocket connection. Jami is configured without public DHT/TURN endpoints
 in both modes.
 
-Set `P2P_MESSENGER_RELAY_URL` to the deployed `wss://...workers.dev` endpoint
-before launching the current development build. Without a deployed endpoint,
-Assisted mode cannot be enabled. The Worker source and tests are in `relay/`.
+Set the `wss://...workers.dev` endpoint in **本机账号 → 辅助连接地址** on each device,
+then enable Assisted Connection. The address is saved locally, so Android does
+not need a launch-time environment variable. For scripted desktop tests,
+`P2P_MESSENGER_RELAY_URL` still overrides the saved address at startup. Without
+an endpoint, Assisted mode cannot be enabled. The Worker source and tests are in `relay/`.
+For a temporary WAN trial without account deployment, `wrangler dev --local
+--tunnel` in `relay/` gives a random `*.trycloudflare.com` address. Both clients
+must enter its `wss://` form and the local Wrangler process must stay running.
+Cloudflare documents Quick Tunnels as development-only: the address changes on
+restart and availability is not guaranteed. Do not treat such a trial as a
+permanent relay deployment.
 It supports friend requests, private messages, group invitations/messages,
 and private file transfers up to 2 MB. Files and chat history remain in the
 local vault; the Worker does not provide offline cloud storage. This transport

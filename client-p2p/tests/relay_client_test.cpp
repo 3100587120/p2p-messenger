@@ -49,7 +49,9 @@ int main(int argc, char** argv)
         if (received && delivered && fileReceived && fileDelivered) app.quit();
     });
     QTimer::singleShot(30000, &app, &QCoreApplication::quit);
-    const QUrl endpoint(QStringLiteral("ws://127.0.0.1:8787"));
+    const auto configuredEndpoint = qEnvironmentVariable("P2P_MESSENGER_RELAY_TEST_URL");
+    const QUrl endpoint(configuredEndpoint.isEmpty() ? QStringLiteral("ws://127.0.0.1:8787")
+                                                   : configuredEndpoint);
     alice.setEndpoint(endpoint);
     bob.setEndpoint(endpoint);
     alice.setEnabled(true);

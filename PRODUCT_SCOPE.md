@@ -19,16 +19,19 @@ packaging are original to P2P Messenger.
 
 ## Network and infrastructure policy
 
-The shipped application must never initiate a connection to a third-party
-service. This is a product invariant, not an optional privacy setting.
+The default Strict Direct mode must never initiate a connection to a
+third-party service. Assisted Connection is an explicit opt-in exception:
+it may connect to the user's configured Cloudflare relay, which can observe
+routing metadata but never message or file plaintext.
 
 - Disable public DHT bootstrap and proxy lists, including all `*.jami.net`
   defaults, public TURN/STUN services, JamiNS/name lookup, telemetry, crash
   reporting, remote configuration, and automatic updates.
 - Never include remote images, web views, CDN assets, or analytics SDKs.
-- The product may connect only to a first-party infrastructure endpoint that
-  its operator deploys and explicitly configures. It is never silently
-  substituted with an upstream or third-party endpoint.
+- The product may connect only to a peer, a local-network device, or an
+  infrastructure endpoint the operator explicitly configures. No upstream
+  or third-party endpoint is silently substituted. A Cloudflare relay is
+  contacted only while Assisted Connection is enabled.
 - Peer discovery supports local-network discovery, QR/manual invites, and a
   first-party rendezvous service. Friend requests are authenticated with each
   device identity before a contact is created.

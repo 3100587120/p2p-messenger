@@ -137,6 +137,23 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 onClicked: messenger.setAssistedConnection(!messenger.assistedConnection)
             }
+            Label { text: "辅助连接地址"; color: "white"; font.bold: true; Layout.fillWidth: true }
+            TextField {
+                id: relayAddress
+                text: messenger.relayEndpoint
+                placeholderText: "wss://你的中继地址"
+                inputMethodHints: Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
+                Layout.fillWidth: true
+            }
+            Button {
+                text: "保存辅助连接地址"
+                Layout.fillWidth: true
+                onClicked: messenger.setRelayEndpoint(relayAddress.text)
+            }
+            Label {
+                text: "两台设备填同一个地址，再各自开启辅助连接。纯直连模式不会连接这里。"
+                color: window.subdued; wrapMode: Text.Wrap; Layout.fillWidth: true; font.pixelSize: 12
+            }
             Label {
                 text: messenger.assistedConnection
                       ? "通过你的 Cloudflare 中继转发端到端加密内容；中继可见通信时间和对象，但看不到消息与文件明文。对方收到后才显示送达。"
