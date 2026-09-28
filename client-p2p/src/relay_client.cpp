@@ -2,6 +2,8 @@
 #include "local_vault.h"
 
 #include <QJsonDocument>
+#include <QNetworkProxyFactory>
+#include <QNetworkProxyQuery>
 #include <QUrlQuery>
 #include <QUuid>
 
@@ -114,6 +116,22 @@ void RelayClient::connectNow()
     QUrlQuery query;
     query.addQueryItem(QStringLiteral("id"), identityId());
     url.setQuery(query);
+    // Ask the OS about the HTTPS equivalent of a secure WebSocket URL.
+    // Windows system proxies often understand https but not the wss scheme.
+    auto proxyUrl = url;
+    proxyUrl.setScheme(url.scheme() == QStringLiteral("wss")
+                           ? QStringLiteral("https") : QStringLiteral("http"));
+    const auto proxies = QNetworkProxyFactory::systemProxyForQuery(QNetworkProxyQuery(proxyUrl));
+    for (const auto& proxy : proxies) {
+        if (proxy.type() == QNetworkProxy::HttpProxy || proxy.type() == QNetworkProxy::Socks5Proxy) {
+            socket_.setProxy(proxy);
+            break;
+        }
+        if (proxy.type() == QNetworkProxy::NoProxy) {
+            socket_.setProxy(proxy);
+            break;
+        }
+    }
     socket_.open(url);
 }
 

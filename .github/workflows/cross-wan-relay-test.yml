@@ -1,0 +1,27 @@
+name: Cross-WAN relay delivery test
+
+on:
+  workflow_dispatch:
+    inputs:
+      receiver_invite_code:
+        description: Ephemeral invitation from the local test receiver
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  sender:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Send encrypted friend request to receiver on a separate network
+        env:
+          RECEIVER_INVITE_CODE: ${{ inputs.receiver_invite_code }}
+          RELAY_TEST_URL: wss://shuangdianliao-relay.plastic-gojirasaurus.workers.dev
+        run: node relay/test/cross-wan-sender.mjs

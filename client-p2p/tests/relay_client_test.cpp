@@ -10,9 +10,40 @@
 
 #include <iostream>
 
+static int runRemoteReceiver(QCoreApplication& app)
+{
+    QTemporaryDir root(QDir::tempPath() + QStringLiteral("/relay-remote-test-XXXXXX"));
+    if (!root.isValid()) return 2;
+    qputenv("P2P_MESSENGER_DATA_ROOT", root.path().toUtf8());
+    LocalVault vault;
+    RelayClient receiver(vault);
+    if (!receiver.isReady()) return 3;
+    bool received = false;
+    QObject::connect(&receiver, &RelayClient::packetReceived, &app,
+        [&](const QString&, const QByteArray&, const QJsonObject& packet) {
+            if (packet.value(QStringLiteral("type")) == QStringLiteral("friend_request") &&
+                packet.value(QStringLiteral("probe")) == QStringLiteral("cross_wan")) {
+                received = true;
+                QTimer::singleShot(3000, &app, &QCoreApplication::quit);
+            }
+        });
+    QObject::connect(&receiver, &RelayClient::errorOccurred, &app,
+        [](const QString& error) { std::cerr << error.toStdString() << '\n'; });
+    const QUrl endpoint(qEnvironmentVariable("P2P_MESSENGER_RELAY_TEST_URL"));
+    receiver.setEndpoint(endpoint);
+    receiver.setEnabled(true);
+    std::cout << "REMOTE_RECEIVER_INVITE=" << receiver.inviteCode().toStdString() << std::endl;
+    QTimer::singleShot(90000, &app, &QCoreApplication::quit);
+    app.exec();
+    std::cout << "REMOTE_RECEIVER_RESULT=" << (received ? "PASS" : "FAIL") << std::endl;
+    return received ? 0 : 4;
+}
+
 int main(int argc, char** argv)
 {
     QCoreApplication app(argc, argv);
+    if (qEnvironmentVariableIsSet("P2P_MESSENGER_RELAY_TEST_REMOTE_RECEIVER"))
+        return runRemoteReceiver(app);
     QTemporaryDir root(QDir::tempPath() + QStringLiteral("/relay-client-test-XXXXXX"));
     if (!root.isValid()) return 2;
     qputenv("P2P_MESSENGER_DATA_ROOT", QDir(root.path()).filePath(QStringLiteral("alice")).toUtf8());
