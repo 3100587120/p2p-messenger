@@ -31,6 +31,8 @@ RelayClient::RelayClient(LocalVault& vault, QObject* parent)
         seen_.insert(item.toString());
     reconnect_.setInterval(5000);
     connect(&reconnect_, &QTimer::timeout, this, &RelayClient::connectNow);
+    retryOutbox_.setInterval(15000);
+    connect(&retryOutbox_, &QTimer::timeout, this, &RelayClient::resendOutbox);
     failureNotice_.setSingleShot(true);
     failureNotice_.setInterval(15000);
     connect(&failureNotice_, &QTimer::timeout, this, [this] {
@@ -41,6 +43,7 @@ RelayClient::RelayClient(LocalVault& vault, QObject* parent)
     });
     connect(&socket_, &QWebSocket::connected, this, [this] {
         connected_ = true;
+        offlineRecipients_.clear();
         failureNotice_.stop();
         pendingError_.clear();
         failureReported_ = false;
@@ -75,6 +78,7 @@ QString RelayClient::idForPublicKey(const QByteArray& key) { return RelayCrypto:
 
 void RelayClient::setEndpoint(const QUrl& endpoint)
 {
+    offlineRecipients_.clear();
     failureNotice_.stop();
     pendingError_.clear();
     failureReported_ = false;
@@ -88,9 +92,12 @@ void RelayClient::setEnabled(bool enabled)
     enabled_ = enabled;
     if (enabled_) {
         reconnect_.start();
+        retryOutbox_.start();
         connectNow();
     } else {
         reconnect_.stop();
+        retryOutbox_.stop();
+        offlineRecipients_.clear();
         failureNotice_.stop();
         pendingError_.clear();
         failureReported_ = false;
@@ -161,8 +168,15 @@ void RelayClient::sendFrame(const QString& id, const Outgoing& outgoing)
 
 void RelayClient::resendOutbox()
 {
-    for (auto it = outbox_.cbegin(); it != outbox_.cend(); ++it)
+    if (!connected_) return;
+    QSet<QString> retriedOfflineRecipients;
+    for (auto it = outbox_.cbegin(); it != outbox_.cend(); ++it) {
+        if (offlineRecipients_.contains(it.value().to)) {
+            if (retriedOfflineRecipients.contains(it.value().to)) continue;
+            retriedOfflineRecipients.insert(it.value().to);
+        }
         sendFrame(it.key(), it.value());
+    }
 }
 
 void RelayClient::sendAck(const QByteArray& recipientPublicKey, const QString& originalId)
@@ -186,8 +200,14 @@ void RelayClient::onFrame(const QString& text)
     const auto frame = document.object();
     const auto op = frame.value(QStringLiteral("op")).toString();
     if (op == QStringLiteral("relay")) {
-        emit deliveryState(frame.value(QStringLiteral("id")).toString(),
-                           frame.value(QStringLiteral("status")).toString());
+        const auto id = frame.value(QStringLiteral("id")).toString();
+        const auto status = frame.value(QStringLiteral("status")).toString();
+        if (outbox_.contains(id)) {
+            const auto recipient = outbox_.value(id).to;
+            if (status == QStringLiteral("recipient_offline")) offlineRecipients_.insert(recipient);
+            else if (status == QStringLiteral("forwarded")) offlineRecipients_.remove(recipient);
+        }
+        emit deliveryState(id, status);
         return;
     }
     if (op != QStringLiteral("packet")) return;

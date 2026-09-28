@@ -45,6 +45,7 @@ private:
     RelayCrypto crypto_;
     QWebSocket socket_;
     QTimer reconnect_;
+    QTimer retryOutbox_;
     QTimer failureNotice_;
     QString pendingError_;
     bool failureReported_ {false};
@@ -52,6 +53,7 @@ private:
     bool enabled_ {false};
     bool connected_ {false};
     QMap<QString, Outgoing> outbox_;
+    QSet<QString> offlineRecipients_;
     QSet<QString> seen_;
     bool currentPacketAccepted_ {true};
 

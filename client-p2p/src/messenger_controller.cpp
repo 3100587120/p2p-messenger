@@ -285,16 +285,22 @@ MessengerController::MessengerController(QObject* parent)
     });
     connect(&relay_, &RelayClient::deliveryState, this,
             [this](const QString& packetId, const QString& state) {
-        if (state != QStringLiteral("delivered")) return;
         bool contactsChangedLocal = false;
         for (auto& item : contacts_) {
             auto entry = item.toMap();
             if (entry.value(QStringLiteral("requestPacketId")).toString() != packetId) continue;
-            entry.insert(QStringLiteral("status"), tr("对方已收到申请，等待确认"));
+            if (state == QStringLiteral("recipient_offline"))
+                entry.insert(QStringLiteral("status"), tr("对方未连接当前中继，申请将自动重试"));
+            else if (state == QStringLiteral("forwarded"))
+                entry.insert(QStringLiteral("status"), tr("已转发，等待对方设备确认"));
+            else if (state == QStringLiteral("delivered"))
+                entry.insert(QStringLiteral("status"), tr("对方已收到申请，等待确认"));
+            else continue;
             item = entry;
             contactsChangedLocal = true;
         }
         if (contactsChangedLocal) { saveProfile(); emit contactsChanged(); }
+        if (state != QStringLiteral("delivered")) return;
         for (const auto& item : contacts_) {
             const auto contactId = item.toMap().value(QStringLiteral("id")).toString();
             auto stored = contactId == activeContactId_ ? messages_ : vault_.loadConversation(contactId);
@@ -565,8 +571,14 @@ MessengerController::MessengerController(QObject* parent)
         networkStatus_ = assistedConnection_ ? tr("辅助连接正在建立")
                                              : tr("纯直连 — 不使用公共引导或中继");
     }
-    if (relayEndpoint_.isEmpty())
-        relayEndpoint_ = QString::fromLatin1(P2P_MESSENGER_DEFAULT_RELAY_URL);
+    const auto builtInRelay = QString::fromLatin1(P2P_MESSENGER_DEFAULT_RELAY_URL);
+    // Quick Tunnel addresses from earlier test builds expire. They were saved
+    // with the profile and otherwise override the permanent relay forever.
+    const auto savedRelayHost = QUrl(relayEndpoint_).host();
+    const bool expiredQuickTunnel = !builtInRelay.isEmpty() &&
+        savedRelayHost.endsWith(QStringLiteral(".trycloudflare.com"), Qt::CaseInsensitive);
+    if (relayEndpoint_.isEmpty() || expiredQuickTunnel)
+        relayEndpoint_ = builtInRelay;
     const auto environmentRelay = qEnvironmentVariable("P2P_MESSENGER_RELAY_URL").trimmed();
     if (!environmentRelay.isEmpty()) relayEndpoint_ = environmentRelay;
     relay_.setEndpoint(QUrl(relayEndpoint_));
@@ -598,6 +610,7 @@ MessengerController::MessengerController(QObject* parent)
     messages_ = vault_.loadConversation(activeContactId_);
     if (messages_.isEmpty())
         appendMessage(tr("欢迎使用双点聊。扫描附近设备或粘贴双机配对码，即可尝试端到端连接。"), false);
+    if (expiredQuickTunnel) saveProfile();
 }
 
 MessengerController::~MessengerController()

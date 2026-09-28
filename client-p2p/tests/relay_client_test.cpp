@@ -22,7 +22,9 @@ int main(int argc, char** argv)
     LocalVault bobVault;
     RelayClient bob(bobVault);
     if (!alice.isReady() || !bob.isReady()) return 3;
+    const bool latePeer = qEnvironmentVariableIsSet("P2P_MESSENGER_RELAY_TEST_LATE_PEER");
     bool received = false, delivered = false, fileReceived = false, fileDelivered = false;
+    bool offlineNotice = false, peerStartScheduled = false;
     QString sentId, fileSentId;
     QObject::connect(&bob, &RelayClient::packetReceived, &app,
         [&](const QString& sender, const QByteArray&, const QJsonObject& packet) {
@@ -34,13 +36,20 @@ int main(int argc, char** argv)
         });
     QObject::connect(&alice, &RelayClient::deliveryState, &app,
         [&](const QString& id, const QString& state) {
+            if (latePeer && id == sentId && state == QStringLiteral("recipient_offline")) {
+                offlineNotice = true;
+                if (!peerStartScheduled) {
+                    peerStartScheduled = true;
+                    QTimer::singleShot(1000, &bob, [&bob] { bob.setEnabled(true); });
+                }
+            }
             if (id == sentId && state == QStringLiteral("delivered")) delivered = true;
             if (id == fileSentId && state == QStringLiteral("delivered")) fileDelivered = true;
         });
     QTimer timer;
     timer.setInterval(100);
     QObject::connect(&timer, &QTimer::timeout, &app, [&] {
-        if (sentId.isEmpty() && alice.isConnected() && bob.isConnected())
+        if (sentId.isEmpty() && alice.isConnected() && (latePeer || bob.isConnected()))
             sentId = alice.send(RelayClient::publicKeyFromCode(bob.inviteCode()),
                 QJsonObject {{QStringLiteral("type"), QStringLiteral("friend_request")}});
         if (fileSentId.isEmpty() && !sentId.isEmpty())
@@ -49,7 +58,7 @@ int main(int argc, char** argv)
                              {QStringLiteral("data"), QString::fromLatin1(QByteArray(12288, 'f').toBase64())}});
         if (received && delivered && fileReceived && fileDelivered) app.quit();
     });
-    QTimer::singleShot(30000, &app, &QCoreApplication::quit);
+    QTimer::singleShot(latePeer ? 45000 : 30000, &app, &QCoreApplication::quit);
     const auto configuredEndpoint = qEnvironmentVariable("P2P_MESSENGER_RELAY_TEST_URL");
     const QUrl endpoint(configuredEndpoint.isEmpty() ? QStringLiteral("ws://127.0.0.1:8787")
                                                    : configuredEndpoint);
@@ -63,13 +72,14 @@ int main(int argc, char** argv)
         return 5;
     }
     alice.setEnabled(true);
-    bob.setEnabled(true);
+    if (!latePeer) bob.setEnabled(true);
     timer.start();
     app.exec();
-    if (!received || !delivered || !fileReceived || !fileDelivered) {
+    if (!received || !delivered || !fileReceived || !fileDelivered || (latePeer && !offlineNotice)) {
         std::cerr << "relay test failed: received=" << received << " delivered=" << delivered
                   << " file_received=" << fileReceived << " file_delivered=" << fileDelivered
-                  << " alice_connected=" << alice.isConnected() << " bob_connected=" << bob.isConnected() << '\n';
+                  << " alice_connected=" << alice.isConnected() << " bob_connected=" << bob.isConnected()
+                  << " offline_notice=" << offlineNotice << '\n';
         return 4;
     }
     std::cout << "relay delivery, authenticated receipt, and file-sized frame passed\n";
