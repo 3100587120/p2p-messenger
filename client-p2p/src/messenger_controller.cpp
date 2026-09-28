@@ -110,8 +110,27 @@ MessengerController::MessengerController(QObject* parent)
 {
     connect(&relay_, &RelayClient::connectedChanged, this, [this](bool connected) {
         if (!assistedConnection_) return;
-        networkStatus_ = connected ? tr("辅助连接已接通 — 等待对方上线")
-                                   : tr("辅助连接未接通 — 好友申请会留在本机重试");
+        if (connected) {
+            selfTestPassed_ = false;
+            networkStatus_ = tr("中继已连接，正在验证本机加密收发");
+            if (selfTestPacketId_.isEmpty())
+                selfTestPacketId_ = relay_.send(RelayClient::publicKeyFromCode(relay_.inviteCode()),
+                    QJsonObject {{QStringLiteral("type"), QStringLiteral("probe")}});
+            if (selfTestPacketId_.isEmpty())
+                setError(tr("本机加密收发自检无法排队，请检查本地存储"));
+            const auto expected = selfTestPacketId_;
+            QTimer::singleShot(20000, this, [this, expected] {
+                if (assistedConnection_ && relay_.isConnected() && !selfTestPassed_ &&
+                    !expected.isEmpty() && expected == selfTestPacketId_) {
+                    networkStatus_ = tr("中继已连接，但本机加密收发自检未通过");
+                    emit networkStatusChanged();
+                    setError(tr("辅助连接自检超时：中继已连接，但加密数据没有返回本机；请勿发送好友申请"));
+                }
+            });
+        } else {
+            selfTestPassed_ = false;
+            networkStatus_ = tr("辅助连接未接通 — 好友申请会留在本机重试");
+        }
         emit networkStatusChanged();
     });
     connect(&relay_, &RelayClient::errorOccurred, this, [this](const QString& error) {
@@ -288,6 +307,12 @@ MessengerController::MessengerController(QObject* parent)
     });
     connect(&relay_, &RelayClient::deliveryState, this,
             [this](const QString& packetId, const QString& state) {
+        if (packetId == selfTestPacketId_ && state == QStringLiteral("delivered")) {
+            selfTestPassed_ = true;
+            selfTestPacketId_.clear();
+            networkStatus_ = tr("辅助连接自检通过 — 等待对方上线");
+            emit networkStatusChanged();
+        }
         if (packetId == peerProbePacketId_) {
             QString result;
             if (state == QStringLiteral("queued"))
@@ -450,7 +475,9 @@ MessengerController::MessengerController(QObject* parent)
     connect(&gatewayMapper_, &GatewayMapper::statusChanged, this,
             [this](const QString& status) {
                 if (assistedConnection_) {
-                    networkStatus_ = relay_.isConnected() ? tr("辅助连接已接通") : tr("辅助连接正在重试");
+                    networkStatus_ = !relay_.isConnected() ? tr("辅助连接正在重试")
+                        : (selfTestPassed_ ? tr("辅助连接自检通过 — 等待对方上线")
+                                           : tr("中继已连接，正在验证本机加密收发"));
                     emit networkStatusChanged();
                     return;
                 }
@@ -684,6 +711,10 @@ bool MessengerController::testPeerConnection(const QString& invite)
         setError(tr("本机还未连上中继，请检查网络和辅助连接状态"));
         return false;
     }
+    if (!selfTestPassed_) {
+        setError(tr("本机加密收发自检尚未通过，请等待状态显示“辅助连接自检通过”"));
+        return false;
+    }
     const auto peerKey = RelayClient::publicKeyFromCode(invite);
     if (peerKey.isEmpty() || RelayClient::idForPublicKey(peerKey) == relay_.identityId()) {
         setError(tr("请粘贴对方当前显示的完整 SD1 配对码，不能使用自己的配对码"));
@@ -868,6 +899,10 @@ bool MessengerController::addContact(const QString& name, const QString& invite)
     }
     auto peerCode = invite.trimmed();
     if (assistedConnection_) {
+        if (!selfTestPassed_) {
+            setError(tr("本机加密收发自检尚未通过，不能发送好友申请"));
+            return false;
+        }
         const auto peerKey = RelayClient::publicKeyFromCode(peerCode);
         if (peerKey.isEmpty()) {
             setError(tr("辅助连接需要新的 SD1 配对码。请让对方切到辅助连接，重新复制配对码。"));

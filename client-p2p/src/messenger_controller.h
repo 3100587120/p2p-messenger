@@ -123,6 +123,8 @@ private:
     QString relayEndpoint_;
     QString peerProbeStatus_;
     QString peerProbePacketId_;
+    QString selfTestPacketId_;
+    bool selfTestPassed_ {false};
     QVariantMap pendingRelayRequests_;
     QVariantMap pendingRelayGroups_;
     QVariantMap incomingRelayFiles_;

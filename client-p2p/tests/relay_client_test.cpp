@@ -24,8 +24,14 @@ int main(int argc, char** argv)
     if (!alice.isReady() || !bob.isReady()) return 3;
     const bool latePeer = qEnvironmentVariableIsSet("P2P_MESSENGER_RELAY_TEST_LATE_PEER");
     bool received = false, delivered = false, fileReceived = false, fileDelivered = false;
+    bool selfReceived = false, selfDelivered = false;
     bool offlineNotice = false, peerStartScheduled = false;
-    QString sentId, fileSentId;
+    QString sentId, fileSentId, selfId;
+    QObject::connect(&alice, &RelayClient::packetReceived, &app,
+        [&](const QString& sender, const QByteArray&, const QJsonObject& packet) {
+            if (sender == alice.identityId() && packet.value(QStringLiteral("type")) == QStringLiteral("probe"))
+                selfReceived = true;
+        });
     QObject::connect(&bob, &RelayClient::packetReceived, &app,
         [&](const QString& sender, const QByteArray&, const QJsonObject& packet) {
             if (sender == alice.identityId() && packet.value(QStringLiteral("type")) == QStringLiteral("friend_request"))
@@ -36,6 +42,7 @@ int main(int argc, char** argv)
         });
     QObject::connect(&alice, &RelayClient::deliveryState, &app,
         [&](const QString& id, const QString& state) {
+            if (id == selfId && state == QStringLiteral("delivered")) selfDelivered = true;
             if (latePeer && id == sentId && state == QStringLiteral("recipient_offline")) {
                 offlineNotice = true;
                 if (!peerStartScheduled) {
@@ -49,6 +56,9 @@ int main(int argc, char** argv)
     QTimer timer;
     timer.setInterval(100);
     QObject::connect(&timer, &QTimer::timeout, &app, [&] {
+        if (selfId.isEmpty() && alice.isConnected())
+            selfId = alice.send(RelayClient::publicKeyFromCode(alice.inviteCode()),
+                QJsonObject {{QStringLiteral("type"), QStringLiteral("probe")}});
         if (sentId.isEmpty() && alice.isConnected() && (latePeer || bob.isConnected()))
             sentId = alice.send(RelayClient::publicKeyFromCode(bob.inviteCode()),
                 QJsonObject {{QStringLiteral("type"), QStringLiteral("friend_request")}});
@@ -56,7 +66,7 @@ int main(int argc, char** argv)
             fileSentId = alice.send(RelayClient::publicKeyFromCode(bob.inviteCode()),
                 QJsonObject {{QStringLiteral("type"), QStringLiteral("file_chunk")},
                              {QStringLiteral("data"), QString::fromLatin1(QByteArray(12288, 'f').toBase64())}});
-        if (received && delivered && fileReceived && fileDelivered) app.quit();
+        if (received && delivered && fileReceived && fileDelivered && selfReceived && selfDelivered) app.quit();
     });
     QTimer::singleShot(latePeer ? 45000 : 30000, &app, &QCoreApplication::quit);
     const auto configuredEndpoint = qEnvironmentVariable("P2P_MESSENGER_RELAY_TEST_URL");
@@ -75,11 +85,13 @@ int main(int argc, char** argv)
     if (!latePeer) bob.setEnabled(true);
     timer.start();
     app.exec();
-    if (!received || !delivered || !fileReceived || !fileDelivered || (latePeer && !offlineNotice)) {
+    if (!received || !delivered || !fileReceived || !fileDelivered ||
+        !selfReceived || !selfDelivered || (latePeer && !offlineNotice)) {
         std::cerr << "relay test failed: received=" << received << " delivered=" << delivered
                   << " file_received=" << fileReceived << " file_delivered=" << fileDelivered
                   << " alice_connected=" << alice.isConnected() << " bob_connected=" << bob.isConnected()
-                  << " offline_notice=" << offlineNotice << '\n';
+                  << " offline_notice=" << offlineNotice << " self_received=" << selfReceived
+                  << " self_delivered=" << selfDelivered << '\n';
         return 4;
     }
     std::cout << "relay delivery, authenticated receipt, and file-sized frame passed\n";
