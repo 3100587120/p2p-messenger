@@ -120,6 +120,9 @@ MessengerController::MessengerController(QObject* parent)
     connect(&relay_, &RelayClient::packetReceived, this,
             [this](const QString& senderId, const QByteArray& senderPublic, const QJsonObject& message) {
         const auto type = message.value(QStringLiteral("type")).toString();
+        // The relay client sends an authenticated receipt for this probe.
+        // It must not create a contact or appear in chat history.
+        if (type == QStringLiteral("probe")) return;
         if (type == QStringLiteral("friend_request")) {
             pendingRelayRequests_.insert(senderId, QString::fromLatin1(senderPublic.toBase64(
                 QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals)));
@@ -285,6 +288,22 @@ MessengerController::MessengerController(QObject* parent)
     });
     connect(&relay_, &RelayClient::deliveryState, this,
             [this](const QString& packetId, const QString& state) {
+        if (packetId == peerProbePacketId_) {
+            QString result;
+            if (state == QStringLiteral("queued"))
+                result = tr("检测已加入本机队列，正在等待中继响应");
+            else if (state == QStringLiteral("recipient_offline"))
+                result = tr("对方未连到同一个中继，或配对码已失效；将自动重试");
+            else if (state == QStringLiteral("forwarded"))
+                result = tr("中继已转发，等待对方设备确认");
+            else if (state == QStringLiteral("delivered"))
+                result = tr("端到端连接成功，可以发送好友申请");
+            if (!result.isEmpty() && result != peerProbeStatus_) {
+                peerProbeStatus_ = result;
+                emit peerProbeStatusChanged();
+                if (state == QStringLiteral("recipient_offline")) setError(result);
+            }
+        }
         bool contactsChangedLocal = false;
         for (auto& item : contacts_) {
             auto entry = item.toMap();
@@ -653,6 +672,35 @@ QStringList MessengerController::pendingRequests() const { return pendingRequest
 QStringList MessengerController::pendingGroupRequests() const { return pendingGroupRequests_; }
 bool MessengerController::assistedConnection() const { return assistedConnection_; }
 QString MessengerController::relayEndpoint() const { return relayEndpoint_; }
+QString MessengerController::peerProbeStatus() const { return peerProbeStatus_; }
+
+bool MessengerController::testPeerConnection(const QString& invite)
+{
+    if (!assistedConnection_ || !relay_.hasEndpoint()) {
+        setError(tr("请先在两台设备上开启辅助连接"));
+        return false;
+    }
+    if (!relay_.isConnected()) {
+        setError(tr("本机还未连上中继，请检查网络和辅助连接状态"));
+        return false;
+    }
+    const auto peerKey = RelayClient::publicKeyFromCode(invite);
+    if (peerKey.isEmpty() || RelayClient::idForPublicKey(peerKey) == relay_.identityId()) {
+        setError(tr("请粘贴对方当前显示的完整 SD1 配对码，不能使用自己的配对码"));
+        return false;
+    }
+    peerProbePacketId_ = relay_.send(peerKey, QJsonObject {
+        {QStringLiteral("type"), QStringLiteral("probe")}
+    });
+    if (peerProbePacketId_.isEmpty()) {
+        setError(tr("连接检测无法加入本机队列，请检查本机存储"));
+        return false;
+    }
+    peerProbeStatus_ = tr("检测已发送，等待对方设备确认");
+    emit peerProbeStatusChanged();
+    setError({});
+    return true;
+}
 
 bool MessengerController::setProfileName(const QString& name)
 {
@@ -1403,6 +1451,9 @@ bool MessengerController::setAssistedConnection(bool enabled)
         return false;
     }
     assistedConnection_ = enabled;
+    peerProbePacketId_.clear();
+    peerProbeStatus_.clear();
+    emit peerProbeStatusChanged();
     relay_.setEnabled(enabled);
     saveProfile();
     networkStatus_ = enabled ? tr("辅助连接正在建立 — 通过你的加密中继")
@@ -1441,6 +1492,9 @@ bool MessengerController::setRelayEndpoint(const QString& endpoint)
         return false;
     }
     relay_.setEndpoint(QUrl(relayEndpoint_));
+    peerProbePacketId_.clear();
+    peerProbeStatus_.clear();
+    emit peerProbeStatusChanged();
     emit relayEndpointChanged();
     if (assistedConnection_) {
         networkStatus_ = tr("辅助连接正在接入新中继");

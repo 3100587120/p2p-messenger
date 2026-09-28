@@ -33,6 +33,7 @@ class MessengerController final : public QObject
     Q_PROPERTY(QStringList pendingGroupRequests READ pendingGroupRequests NOTIFY pendingGroupRequestsChanged)
     Q_PROPERTY(bool assistedConnection READ assistedConnection NOTIFY assistedConnectionChanged)
     Q_PROPERTY(QString relayEndpoint READ relayEndpoint NOTIFY relayEndpointChanged)
+    Q_PROPERTY(QString peerProbeStatus READ peerProbeStatus NOTIFY peerProbeStatusChanged)
 
 public:
     explicit MessengerController(QObject* parent = nullptr);
@@ -55,6 +56,7 @@ public:
     QStringList pendingGroupRequests() const;
     bool assistedConnection() const;
     QString relayEndpoint() const;
+    QString peerProbeStatus() const;
 
     Q_INVOKABLE void selectContact(const QString& contactId);
     Q_INVOKABLE bool addContact(const QString& name, const QString& invite);
@@ -78,6 +80,7 @@ public:
     Q_INVOKABLE bool configureNetwork(const QString& rendezvous);
     Q_INVOKABLE bool setAssistedConnection(bool enabled);
     Q_INVOKABLE bool setRelayEndpoint(const QString& endpoint);
+    Q_INVOKABLE bool testPeerConnection(const QString& invite);
 
 signals:
     void contactsChanged();
@@ -96,6 +99,7 @@ signals:
     void pendingGroupRequestsChanged();
     void assistedConnectionChanged();
     void relayEndpointChanged();
+    void peerProbeStatusChanged();
 
 private:
     QVariantList contacts_;
@@ -117,6 +121,8 @@ private:
     PrivateNetworkConfig networkConfig_;
     bool assistedConnection_ {false};
     QString relayEndpoint_;
+    QString peerProbeStatus_;
+    QString peerProbePacketId_;
     QVariantMap pendingRelayRequests_;
     QVariantMap pendingRelayGroups_;
     QVariantMap incomingRelayFiles_;

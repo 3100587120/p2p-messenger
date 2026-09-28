@@ -204,6 +204,24 @@ ApplicationWindow {
             Button { text: "重新查找"; Layout.fillWidth: true; onClicked: messenger.refreshNearbyPeers() }
             TextField { id: friendName; placeholderText: "备注名称（可选）"; Layout.fillWidth: true }
             TextArea { id: invite; placeholderText: "粘贴对方的配对码"; wrapMode: Text.Wrap; Layout.fillWidth: true; Layout.preferredHeight: 90 }
+            Label {
+                text: messenger.assistedConnection
+                      ? "本机中继：" + messenger.relayEndpoint + "\n状态：" + messenger.networkStatus
+                      : "当前为纯直连模式"
+                wrapMode: Text.WrapAnywhere; color: window.subdued; font.pixelSize: 12; Layout.fillWidth: true
+            }
+            Button {
+                text: "先检测能否连接对方"
+                visible: messenger.assistedConnection
+                enabled: invite.text.trim().length > 0
+                Layout.fillWidth: true
+                onClicked: messenger.testPeerConnection(invite.text)
+            }
+            Label {
+                text: messenger.peerProbeStatus
+                visible: messenger.peerProbeStatus.length > 0 && messenger.assistedConnection
+                wrapMode: Text.Wrap; color: window.accent; Layout.fillWidth: true
+            }
             Button {
                 text: "发送好友申请"
                 enabled: invite.text.trim().length > 0
