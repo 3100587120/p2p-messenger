@@ -25,6 +25,7 @@ public:
     static QString idForPublicKey(const QByteArray& key);
     void setEndpoint(const QUrl& endpoint);
     void setEnabled(bool enabled);
+    void refreshConnection();
     QString send(const QByteArray& recipientPublicKey, const QJsonObject& message);
     QStringList sendBatch(const QByteArray& recipientPublicKey, const QList<QJsonObject>& messages);
     void rejectCurrentPacket();
@@ -47,6 +48,9 @@ private:
     QTimer reconnect_;
     QTimer retryOutbox_;
     QTimer failureNotice_;
+    QTimer heartbeat_;
+    QTimer pongDeadline_;
+    QTimer connectDeadline_;
     QString pendingError_;
     bool failureReported_ {false};
     QUrl endpoint_;

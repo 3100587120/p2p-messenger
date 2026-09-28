@@ -164,6 +164,7 @@ int main(int argc, char** argv)
         return 5;
     }
     alice.setEnabled(true);
+    if (latePeer) QTimer::singleShot(800, &alice, &RelayClient::refreshConnection);
     if (!latePeer) bob.setEnabled(true);
     timer.start();
     app.exec();

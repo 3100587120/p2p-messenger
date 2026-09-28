@@ -45,3 +45,24 @@ Do not require users to enable a separate proxy as the product solution.
 No new product build was made in this investigation. Only the diagnostic test
 was rebuilt. Existing successful cross-WAN core test run: 36382702576. It does
 not verify Android TLS, UI request handling, or mobile network accessibility.
+
+## Follow-up: application friend flow and reconnect fix
+
+The user clarified that the failure occurs when requesting friendship.
+Added a separate test executable using the production MessengerController,
+isolated temporary profile, real daemon, and the deployed relay. GitHub
+runner sends an encrypted request; the controller persists it, emits its
+pending-request signal, accepts it, then exchanges messages with the runner.
+Runs 36394398407 and 36394804869 passed (the latter includes reconnect code).
+These exercise the application controller, not Android UI or its network.
+
+Fixed two concrete gaps: no liveness deadline or foreground reconnect for
+stale mobile WebSockets; and a static request dialog that kept saying queued
+even after its contact delivery status changed. Added ping/pong deadlines,
+connection deadlines, foreground reconnect, and reactive request status.
+The late-peer regression forces a connection restart before delivery and
+passed against the public relay. Android version advanced to 0.4.8-test (12).
+
+The user's exact latest failure is still unconfirmed. A question asking the
+current popup text is pending. Cloudflare ingress permissions remain blocked.
+Do not claim these changes prove the user's Android friend request is fixed.

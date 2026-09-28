@@ -108,6 +108,9 @@ MessengerController::MessengerController(QObject* parent)
     , networkStatus_(tr("仅本地模式 — 尚未配置自建服务"))
     , relay_(vault_, this)
 {
+    connect(qGuiApp, &QGuiApplication::applicationStateChanged, this, [this](Qt::ApplicationState state) {
+        if (state == Qt::ApplicationActive && assistedConnection_) relay_.refreshConnection();
+    });
     connect(&relay_, &RelayClient::connectedChanged, this, [this](bool connected) {
         if (!assistedConnection_) return;
         if (connected) {

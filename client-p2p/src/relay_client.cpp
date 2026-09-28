@@ -34,6 +34,29 @@ RelayClient::RelayClient(LocalVault& vault, QObject* parent)
     reconnect_.setInterval(5000);
     connect(&reconnect_, &QTimer::timeout, this, &RelayClient::connectNow);
     retryOutbox_.setInterval(15000);
+    heartbeat_.setInterval(15000);
+    pongDeadline_.setSingleShot(true);
+    pongDeadline_.setInterval(10000);
+    connectDeadline_.setSingleShot(true);
+    connectDeadline_.setInterval(15000);
+    connect(&heartbeat_, &QTimer::timeout, this, [this] {
+        if (!connected_ || pongDeadline_.isActive()) return;
+        pongDeadline_.start();
+        socket_.ping(QByteArrayLiteral("SD1"));
+    });
+    connect(&socket_, &QWebSocket::pong, this, [this](quint64, const QByteArray&) {
+        pongDeadline_.stop();
+    });
+    const auto timedOut = [this] {
+        if (!enabled_) return;
+        if (!failureReported_) {
+            failureReported_ = true;
+            emit errorOccurred(tr("连接响应超时，正在重新连接。未送达的好友申请保存在本机，恢复后会自动重发。"));
+        }
+        refreshConnection();
+    };
+    connect(&pongDeadline_, &QTimer::timeout, this, timedOut);
+    connect(&connectDeadline_, &QTimer::timeout, this, timedOut);
     connect(&retryOutbox_, &QTimer::timeout, this, &RelayClient::resendOutbox);
     failureNotice_.setSingleShot(true);
     failureNotice_.setInterval(15000);
@@ -44,6 +67,8 @@ RelayClient::RelayClient(LocalVault& vault, QObject* parent)
         }
     });
     connect(&socket_, &QWebSocket::connected, this, [this] {
+        connectDeadline_.stop();
+        heartbeat_.start();
         connected_ = true;
         offlineRecipients_.clear();
         failureNotice_.stop();
@@ -53,6 +78,9 @@ RelayClient::RelayClient(LocalVault& vault, QObject* parent)
         resendOutbox();
     });
     connect(&socket_, &QWebSocket::disconnected, this, [this] {
+        heartbeat_.stop();
+        pongDeadline_.stop();
+        connectDeadline_.stop();
         connected_ = false;
         emit connectedChanged(false);
         if (enabled_) reconnect_.start();
@@ -97,6 +125,9 @@ void RelayClient::setEnabled(bool enabled)
         retryOutbox_.start();
         connectNow();
     } else {
+        heartbeat_.stop();
+        pongDeadline_.stop();
+        connectDeadline_.stop();
         reconnect_.stop();
         retryOutbox_.stop();
         offlineRecipients_.clear();
@@ -105,6 +136,20 @@ void RelayClient::setEnabled(bool enabled)
         failureReported_ = false;
         socket_.close();
     }
+}
+
+void RelayClient::refreshConnection()
+{
+    if (!enabled_) return;
+    heartbeat_.stop();
+    pongDeadline_.stop();
+    connectDeadline_.stop();
+    socket_.abort();
+    if (connected_) {
+        connected_ = false;
+        emit connectedChanged(false);
+    }
+    connectNow();
 }
 
 void RelayClient::connectNow()
@@ -132,6 +177,7 @@ void RelayClient::connectNow()
             break;
         }
     }
+    connectDeadline_.start();
     socket_.open(url);
 }
 

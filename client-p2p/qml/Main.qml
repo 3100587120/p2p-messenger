@@ -91,14 +91,24 @@ ApplicationWindow {
 
     Dialog {
         id: requestSubmittedDialog
-        title: "好友申请已排队"
+        property string requestedContactId: ""
+        property var requestContact: {
+            const entries = messenger.contacts
+            for (let i = 0; i < entries.length; ++i)
+                if (entries[i].id === requestedContactId) return entries[i]
+            return ({})
+        }
+        title: requestContact.ready ? "已成为好友" : (requestContact.status || "正在发送好友申请")
         modal: true
         anchors.centerIn: parent
         width: Math.min(420, window.width - 32)
         standardButtons: Dialog.Ok
         background: Rectangle { color: window.panel; radius: 18 }
         contentItem: Label {
-            text: "申请已加密并保存在本机发送队列。只有联系人状态显示“对方已收到申请”，才代表对方设备确认送达。跨网时双方都需开启辅助连接并保持在线。"
+            text: requestSubmittedDialog.requestContact.ready
+                  ? "对方已接受申请，现在可以发送消息。"
+                  : ((requestSubmittedDialog.requestContact.status || "等待发送") + "\n\n" +
+                     "本机连接：" + messenger.networkStatus + "\n状态会自动更新，无需重复添加好友。")
             color: "white"; wrapMode: Text.Wrap; padding: 18
         }
     }
@@ -226,7 +236,7 @@ ApplicationWindow {
                 text: "发送好友申请"
                 enabled: invite.text.trim().length > 0
                 Layout.alignment: Qt.AlignRight
-                onClicked: { if (messenger.addContact(friendName.text, invite.text)) { addFriend.close(); requestSubmittedDialog.open() } }
+                onClicked: { if (messenger.addContact(friendName.text, invite.text)) { requestSubmittedDialog.requestedContactId = messenger.activeContactId; addFriend.close(); requestSubmittedDialog.open() } }
             }
             }
         }
