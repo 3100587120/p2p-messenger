@@ -14,6 +14,7 @@ option(P2P_MESSENGER_BUILD_DAEMON_E2E "Build a local two-identity daemon integra
 option(P2P_MESSENGER_BUILD_RELAY_TESTS "Build relay encryption tests" OFF)
 set(P2P_MESSENGER_DAEMON_INCLUDE_DIR "" CACHE PATH "Directory containing jami/jami.h")
 set(P2P_MESSENGER_DAEMON_LIBRARY "" CACHE FILEPATH "Private daemon library")
+set(P2P_MESSENGER_ANDROID_OPENSSL_DIR "" CACHE PATH "Directory containing Android libcrypto_3.so and libssl_3.so")
 set(P2P_MESSENGER_DEFAULT_RELAY_URL "" CACHE STRING "Operator-deployed WSS relay URL, empty for unconfigured builds")
 if(P2P_MESSENGER_DEFAULT_RELAY_URL AND
    NOT P2P_MESSENGER_DEFAULT_RELAY_URL MATCHES "^wss://[A-Za-z0-9.-]+(:[0-9]+)?/?$")
@@ -71,6 +72,13 @@ endif()
 if(ANDROID)
     set_property(TARGET P2PMessenger APPEND PROPERTY QT_ANDROID_PACKAGE_SOURCE_DIR
         ${CMAKE_CURRENT_SOURCE_DIR}/android)
+    foreach(_tls_library IN ITEMS libcrypto_3.so libssl_3.so)
+        if(NOT EXISTS "${P2P_MESSENGER_ANDROID_OPENSSL_DIR}/${_tls_library}")
+            message(FATAL_ERROR "Android TLS requires ${_tls_library}; set P2P_MESSENGER_ANDROID_OPENSSL_DIR")
+        endif()
+        set_property(TARGET P2PMessenger APPEND PROPERTY QT_ANDROID_EXTRA_LIBS
+            "${P2P_MESSENGER_ANDROID_OPENSSL_DIR}/${_tls_library}")
+    endforeach()
 endif()
 
 if(P2P_MESSENGER_WITH_DAEMON)

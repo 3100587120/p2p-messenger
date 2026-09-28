@@ -18,6 +18,26 @@ $daemonBuild = Join-Path $BuildRoot 'daemon-android-arm64-v5'
 $enginePackage = Join-Path $BuildRoot 'android-engine-package/libjami-core.so'
 $appBuild = Join-Path $BuildRoot 'client-p2p-android-debug'
 $dist = Join-Path $repo 'dist/ShuangDianLiao-Android-arm64-AssistedProxy-Test-debug.apk'
+$opensslRoot = Join-Path $BuildRoot 'android_openssl'
+$opensslCommit = 'b71f1470962019bd89534a2919f5925f93bc5779'
+$opensslLib = Join-Path $opensslRoot 'ssl_3/arm64-v8a'
+
+if (-not (Test-Path -LiteralPath (Join-Path $opensslLib 'libssl_3.so'))) {
+    New-Item -ItemType Directory -Force -Path $opensslRoot | Out-Null
+    & git -C $opensslRoot init -q
+    if ($LASTEXITCODE) { throw 'Unable to initialize Android OpenSSL dependency' }
+    & git -C $opensslRoot remote add origin 'https://github.com/KDAB/android_openssl.git'
+    if ($LASTEXITCODE) { throw 'Unable to configure Android OpenSSL source' }
+    & git -C $opensslRoot fetch --depth 1 origin $opensslCommit
+    if ($LASTEXITCODE) { throw 'Unable to fetch Android OpenSSL dependency' }
+    & git -C $opensslRoot checkout -q FETCH_HEAD
+    if ($LASTEXITCODE) { throw 'Unable to check out Android OpenSSL dependency' }
+}
+foreach ($name in @('libcrypto_3.so', 'libssl_3.so')) {
+    if (-not (Test-Path -LiteralPath (Join-Path $opensslLib $name))) {
+        throw "Missing Android TLS library: $name"
+    }
+}
 
 foreach ($required in @($cmake, (Join-Path $jdk 'bin/java.exe'),
                        (Join-Path $contrib 'lib/libyrs.a'),
@@ -56,6 +76,7 @@ if ($LASTEXITCODE) { throw 'Android engine strip failed' }
     "-DQT_HOST_PATH=$qtHost" "-DANDROID_SDK_ROOT=$sdk" `
     '-DANDROID_ABI=arm64-v8a' '-DANDROID_PLATFORM=android-26' '-DCMAKE_BUILD_TYPE=Debug' `
     '-DP2P_MESSENGER_WITH_DAEMON=ON' `
+    "-DP2P_MESSENGER_ANDROID_OPENSSL_DIR=$opensslLib" `
     "-DP2P_MESSENGER_DEFAULT_RELAY_URL=$RelayUrl" `
     '-DCMAKE_AUTOGEN_PARALLEL=1' `
     "-DP2P_MESSENGER_DAEMON_INCLUDE_DIR=$daemon/src" `

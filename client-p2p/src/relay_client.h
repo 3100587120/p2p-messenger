@@ -45,6 +45,9 @@ private:
     RelayCrypto crypto_;
     QWebSocket socket_;
     QTimer reconnect_;
+    QTimer failureNotice_;
+    QString pendingError_;
+    bool failureReported_ {false};
     QUrl endpoint_;
     bool enabled_ {false};
     bool connected_ {false};

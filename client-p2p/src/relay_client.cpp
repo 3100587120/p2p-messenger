@@ -31,8 +31,19 @@ RelayClient::RelayClient(LocalVault& vault, QObject* parent)
         seen_.insert(item.toString());
     reconnect_.setInterval(5000);
     connect(&reconnect_, &QTimer::timeout, this, &RelayClient::connectNow);
+    failureNotice_.setSingleShot(true);
+    failureNotice_.setInterval(15000);
+    connect(&failureNotice_, &QTimer::timeout, this, [this] {
+        if (enabled_ && !connected_ && !failureReported_ && !pendingError_.isEmpty()) {
+            failureReported_ = true;
+            emit errorOccurred(tr("辅助连接持续失败，正在自动重试：%1").arg(pendingError_));
+        }
+    });
     connect(&socket_, &QWebSocket::connected, this, [this] {
         connected_ = true;
+        failureNotice_.stop();
+        pendingError_.clear();
+        failureReported_ = false;
         emit connectedChanged(true);
         resendOutbox();
     });
@@ -43,7 +54,9 @@ RelayClient::RelayClient(LocalVault& vault, QObject* parent)
     });
     connect(&socket_, &QWebSocket::textMessageReceived, this, &RelayClient::onFrame);
     connect(&socket_, &QWebSocket::errorOccurred, this, [this] {
-        emit errorOccurred(tr("辅助连接失败：%1").arg(socket_.errorString()));
+        if (!enabled_) return;
+        pendingError_ = socket_.errorString();
+        if (!failureReported_ && !failureNotice_.isActive()) failureNotice_.start();
     });
 }
 
@@ -62,6 +75,9 @@ QString RelayClient::idForPublicKey(const QByteArray& key) { return RelayCrypto:
 
 void RelayClient::setEndpoint(const QUrl& endpoint)
 {
+    failureNotice_.stop();
+    pendingError_.clear();
+    failureReported_ = false;
     endpoint_ = endpoint;
     socket_.close();
     if (enabled_) connectNow();
@@ -75,6 +91,9 @@ void RelayClient::setEnabled(bool enabled)
         connectNow();
     } else {
         reconnect_.stop();
+        failureNotice_.stop();
+        pendingError_.clear();
+        failureReported_ = false;
         socket_.close();
     }
 }
