@@ -1,4 +1,5 @@
 #include "messenger_controller.h"
+#include "relay_build_config.h"
 
 #include <QDateTime>
 #include <QFile>
@@ -564,6 +565,8 @@ MessengerController::MessengerController(QObject* parent)
         networkStatus_ = assistedConnection_ ? tr("辅助连接正在建立")
                                              : tr("纯直连 — 不使用公共引导或中继");
     }
+    if (relayEndpoint_.isEmpty())
+        relayEndpoint_ = QString::fromLatin1(P2P_MESSENGER_DEFAULT_RELAY_URL);
     const auto environmentRelay = qEnvironmentVariable("P2P_MESSENGER_RELAY_URL").trimmed();
     if (!environmentRelay.isEmpty()) relayEndpoint_ = environmentRelay;
     relay_.setEndpoint(QUrl(relayEndpoint_));

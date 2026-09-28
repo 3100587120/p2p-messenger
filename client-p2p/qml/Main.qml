@@ -137,22 +137,25 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 onClicked: messenger.setAssistedConnection(!messenger.assistedConnection)
             }
-            Label { text: "辅助连接地址"; color: "white"; font.bold: true; Layout.fillWidth: true }
+            CheckBox { id: advancedNetwork; text: "高级网络设置"; Layout.fillWidth: true }
+            Label { text: "辅助连接地址"; color: "white"; font.bold: true; Layout.fillWidth: true; visible: advancedNetwork.checked }
             TextField {
                 id: relayAddress
                 text: messenger.relayEndpoint
                 placeholderText: "wss://你的中继地址"
                 inputMethodHints: Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
                 Layout.fillWidth: true
+                visible: advancedNetwork.checked
             }
             Button {
                 text: "保存辅助连接地址"
                 Layout.fillWidth: true
+                visible: advancedNetwork.checked
                 onClicked: messenger.setRelayEndpoint(relayAddress.text)
             }
             Label {
                 text: "两台设备填同一个地址，再各自开启辅助连接。纯直连模式不会连接这里。"
-                color: window.subdued; wrapMode: Text.Wrap; Layout.fillWidth: true; font.pixelSize: 12
+                color: window.subdued; wrapMode: Text.Wrap; Layout.fillWidth: true; font.pixelSize: 12; visible: advancedNetwork.checked
             }
             Label {
                 text: messenger.assistedConnection
@@ -160,7 +163,6 @@ ApplicationWindow {
                       : "默认模式：不连接公共引导或中继。跨网连接取决于双方网络是否允许直连；失败时可自行切换辅助连接。"
                 color: window.subdued; wrapMode: Text.Wrap; Layout.fillWidth: true; font.pixelSize: 12
             }
-            CheckBox { id: advancedNetwork; text: "高级网络设置"; Layout.fillWidth: true }
             Label { text: "本机账号 ID：" + messenger.accountId; color: window.subdued; wrapMode: Text.WrapAnywhere; Layout.fillWidth: true; font.pixelSize: 12; visible: advancedNetwork.checked }
             Label { text: "监听端口：" + (messenger.listeningPort > 0 ? messenger.listeningPort : "尚未就绪"); color: window.subdued; Layout.fillWidth: true; font.pixelSize: 12; visible: advancedNetwork.checked }
             TextField { id: directAddress; text: messenger.directEndpoint; placeholderText: "可达 IP:端口"; Layout.fillWidth: true; visible: advancedNetwork.checked }

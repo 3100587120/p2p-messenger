@@ -1,0 +1,5 @@
+#pragma once
+
+// Set by the product operator at build time; an empty value keeps Assisted
+// Connection unavailable until the user explicitly configures a relay.
+#define P2P_MESSENGER_DEFAULT_RELAY_URL "@P2P_MESSENGER_DEFAULT_RELAY_URL@"

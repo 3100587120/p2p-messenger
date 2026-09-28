@@ -1,4 +1,5 @@
-param([switch]$SkipDeploy, [switch]$BuildE2E, [switch]$BuildRelayTests)
+param([switch]$SkipDeploy, [switch]$BuildE2E, [switch]$BuildRelayTests,
+      [string]$RelayUrl = '')
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
@@ -56,6 +57,7 @@ $configureArgs = @(
     '-DCMAKE_VS_GLOBALS=WindowsSDKInstalled=true;WindowsSDK_Desktop_Support=true;LibraryPath=D:/WinSDKLib',
     "-DCMAKE_EXE_LINKER_FLAGS_INIT=/LIBPATH:D:/WinSDK10/Lib/$sdkVersion/um/x64 /LIBPATH:D:/WinSDK10/Lib/$sdkVersion/ucrt/x64",
     '-DP2P_MESSENGER_WITH_DAEMON=ON',
+    "-DP2P_MESSENGER_DEFAULT_RELAY_URL=$RelayUrl",
     '-DCMAKE_AUTOGEN_PARALLEL=1',
     "-DP2P_MESSENGER_BUILD_DAEMON_E2E=$($BuildE2E.IsPresent.ToString().ToUpperInvariant())",
     "-DP2P_MESSENGER_BUILD_RELAY_TESTS=$($BuildRelayTests.IsPresent.ToString().ToUpperInvariant())",

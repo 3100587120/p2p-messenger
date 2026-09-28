@@ -79,11 +79,16 @@ It is a third-party service in Assisted mode; switching back disables its
 WebSocket connection. Jami is configured without public DHT/TURN endpoints
 in both modes.
 
-Set the `wss://...workers.dev` endpoint in **本机账号 → 辅助连接地址** on each device,
-then enable Assisted Connection. The address is saved locally, so Android does
-not need a launch-time environment variable. For scripted desktop tests,
-`P2P_MESSENGER_RELAY_URL` still overrides the saved address at startup. Without
-an endpoint, Assisted mode cannot be enabled. The Worker source and tests are in `relay/`.
+For release builds, the operator passes the deployed `wss://...workers.dev`
+endpoint as `-RelayUrl` to both `scripts/build-p2p-windows.ps1` and
+`scripts/build-p2p-android.ps1`. It becomes the Assisted Connection default
+inside both apps; users only select the mode and exchange SD1 pairing codes.
+The default Strict Direct mode does not connect to it. A build without
+`-RelayUrl` has no embedded service address and cannot enable Assisted mode
+until a user explicitly configures an endpoint under **本机账号 → 高级网络设置**.
+That override is saved locally. For scripted desktop tests,
+`P2P_MESSENGER_RELAY_URL` overrides the saved/build address at startup.
+The Worker source and tests are in `relay/`.
 For a temporary WAN trial without account deployment, `wrangler dev --local
 --tunnel` in `relay/` gives a random `*.trycloudflare.com` address. Both clients
 must enter its `wss://` form and the local Wrangler process must stay running.

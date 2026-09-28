@@ -1,5 +1,6 @@
 param(
-    [string]$BuildRoot = ""
+    [string]$BuildRoot = "",
+    [string]$RelayUrl = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -55,6 +56,7 @@ if ($LASTEXITCODE) { throw 'Android engine strip failed' }
     "-DQT_HOST_PATH=$qtHost" "-DANDROID_SDK_ROOT=$sdk" `
     '-DANDROID_ABI=arm64-v8a' '-DANDROID_PLATFORM=android-26' '-DCMAKE_BUILD_TYPE=Debug' `
     '-DP2P_MESSENGER_WITH_DAEMON=ON' `
+    "-DP2P_MESSENGER_DEFAULT_RELAY_URL=$RelayUrl" `
     '-DCMAKE_AUTOGEN_PARALLEL=1' `
     "-DP2P_MESSENGER_DAEMON_INCLUDE_DIR=$daemon/src" `
     "-DP2P_MESSENGER_DAEMON_LIBRARY=$enginePackage"

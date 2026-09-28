@@ -14,6 +14,14 @@ option(P2P_MESSENGER_BUILD_DAEMON_E2E "Build a local two-identity daemon integra
 option(P2P_MESSENGER_BUILD_RELAY_TESTS "Build relay encryption tests" OFF)
 set(P2P_MESSENGER_DAEMON_INCLUDE_DIR "" CACHE PATH "Directory containing jami/jami.h")
 set(P2P_MESSENGER_DAEMON_LIBRARY "" CACHE FILEPATH "Private daemon library")
+set(P2P_MESSENGER_DEFAULT_RELAY_URL "" CACHE STRING "Operator-deployed WSS relay URL, empty for unconfigured builds")
+if(P2P_MESSENGER_DEFAULT_RELAY_URL AND
+   NOT P2P_MESSENGER_DEFAULT_RELAY_URL MATCHES "^wss://[A-Za-z0-9.-]+(:[0-9]+)?/?$")
+    message(FATAL_ERROR "P2P_MESSENGER_DEFAULT_RELAY_URL must be a bare wss:// hostname, with an optional port")
+endif()
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated")
+configure_file(src/relay_build_config.h.in
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/relay_build_config.h" @ONLY)
 
 qt_standard_project_setup(REQUIRES 6.5)
 
@@ -34,6 +42,7 @@ qt_add_executable(P2PMessenger
     src/private_network_config.cpp
     src/private_network_config.h
 )
+target_include_directories(P2PMessenger PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 
 qt_add_qml_module(P2PMessenger
     URI P2PMessenger

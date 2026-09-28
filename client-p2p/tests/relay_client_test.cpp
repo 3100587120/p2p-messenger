@@ -3,6 +3,7 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QEventLoop>
 #include <QJsonObject>
 #include <QTemporaryDir>
 #include <QTimer>
@@ -54,6 +55,13 @@ int main(int argc, char** argv)
                                                    : configuredEndpoint);
     alice.setEndpoint(endpoint);
     bob.setEndpoint(endpoint);
+    QEventLoop disabledMode;
+    QTimer::singleShot(300, &disabledMode, &QEventLoop::quit);
+    disabledMode.exec();
+    if (alice.isConnected() || bob.isConnected()) {
+        std::cerr << "relay connected before Assisted Connection was enabled\n";
+        return 5;
+    }
     alice.setEnabled(true);
     bob.setEnabled(true);
     timer.start();
