@@ -8,7 +8,7 @@
 class LocalVault final
 {
 public:
-    LocalVault();
+    explicit LocalVault(const QString& dataRoot = {});
 
     bool isReady() const;
     QString error() const;

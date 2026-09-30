@@ -16,7 +16,7 @@ Copy-Item -LiteralPath (Join-Path $release 'P2PMessenger.exe') -Destination $fri
 $entries = @($friendlyExe)
 $entries += @(Get-ChildItem -LiteralPath $release -Filter '*.dll' -File | ForEach-Object FullName)
 foreach ($name in @('generic','iconengines','imageformats','networkinformation',
-                     'platforms','qml','tls','translations')) {
+                     'platforms','qml','tls','translations','multimedia')) {
     $path = Join-Path $release $name
     if (Test-Path -LiteralPath $path) { $entries += $path }
 }

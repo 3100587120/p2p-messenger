@@ -4,6 +4,8 @@ import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import WebSocket, { WebSocketServer } from "ws";
 import { Router } from "../src/worker.js";
+import { FileDirectoryStorage } from './directory-storage.js';
+import { resolve } from 'node:path';
 
 const identityPattern = /^[0-9a-f]{64}$/;
 
@@ -23,7 +25,7 @@ export function listenerConfig(environment = process.env) {
 
 // Shares the exact opaque-message router with the Cloudflare implementation.
 // No decryption keys, offline database or public Cloudflare dependency here.
-export function createRelay({ tls, maxConnections = 1000, maxPerIp = 20 } = {}) {
+export function createRelay({ tls, maxConnections = 1000, maxPerIp = 20, directoryStorage, ownerSecret = '' } = {}) {
   const handler = (request, response) => {
     if (request.method === "GET" && request.url === "/health") {
       response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
@@ -35,8 +37,9 @@ export function createRelay({ tls, maxConnections = 1000, maxPerIp = 20 } = {}) 
   const ipCounts = new Map();
   const webSockets = new WebSocketServer({ noServer: true, maxPayload: 65536, perMessageDeflate: false });
   const router = new Router({
+    storage: directoryStorage,
     getWebSockets: (id) => [...(sockets.get(id) ?? [])].filter((socket) => socket.readyState === WebSocket.OPEN),
-  });
+  }, {OWNER_DEVICE_SECRET:ownerSecret});
   server.on("upgrade", (request, socket, head) => {
     let url;
     try { url = new URL(request.url, "http://localhost"); } catch { socket.destroy(); return; }
@@ -52,7 +55,9 @@ export function createRelay({ tls, maxConnections = 1000, maxPerIp = 20 } = {}) 
       const peers = sockets.get(id) ?? new Set();
       peers.add(client); sockets.set(id, peers);
       ipCounts.set(ip, (ipCounts.get(ip) ?? 0) + 1);
-      client.deserializeAttachment = () => ({ id });
+      let attachment = {id};
+      client.deserializeAttachment = () => ({...attachment});
+      client.serializeAttachment = value => { attachment = {...value}; };
       client.alive = true;
       client.on("pong", () => { client.alive = true; });
       let frameWindowStart = Date.now(), frameCount = 0;
@@ -61,7 +66,7 @@ export function createRelay({ tls, maxConnections = 1000, maxPerIp = 20 } = {}) 
         if (++frameCount > 200 || client.bufferedAmount > 4 * 1024 * 1024) {
           client.close(1008, "Rate limit"); return;
         }
-        try { router.webSocketMessage(client, binary ? data : data.toString("utf8")); }
+        try { Promise.resolve(router.webSocketMessage(client, binary ? data : data.toString("utf8"))).catch(() => client.close(1011,'Relay error')); }
         catch { client.close(1011, "Relay error"); }
       });
       client.on("error", () => { /* Do not log packet contents or private data. */ });
@@ -96,7 +101,7 @@ export function createRelay({ tls, maxConnections = 1000, maxPerIp = 20 } = {}) 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const { keyPath, certPath, host, port } = listenerConfig();
   const tls = keyPath ? { key: readFileSync(keyPath), cert: readFileSync(certPath), minVersion: "TLSv1.2" } : undefined;
-  const relay = createRelay({ tls });
+  const relay = createRelay({ tls, directoryStorage: new FileDirectoryStorage(resolve(process.env.RELAY_DIRECTORY_PATH || 'data/uid-directory.json')), ownerSecret:process.env.OWNER_DEVICE_SECRET || '' });
   relay.server.listen(port, host, () => console.log(`双点聊 encrypted relay: ${tls ? "https" : "http"}://${host}:${port}`));
   for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => { relay.close().then(() => process.exit(0)); });
 }

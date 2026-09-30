@@ -4,7 +4,7 @@ project(P2PMessenger VERSION 0.1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Quick QuickControls2 Network WebSockets)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Quick QuickControls2 Network WebSockets Multimedia)
 if(NOT WIN32 AND NOT ANDROID)
     find_package(OpenSSL REQUIRED)
 endif()
@@ -27,6 +27,7 @@ configure_file(src/relay_build_config.h.in
 qt_standard_project_setup(REQUIRES 6.5)
 
 qt_add_executable(P2PMessenger
+    src/account_manager.cpp src/account_manager.h
     src/main.cpp
     src/android_acceptance.cpp src/android_acceptance.h
     src/messenger_controller.cpp
@@ -41,6 +42,7 @@ qt_add_executable(P2PMessenger
     src/relay_crypto.h
     src/relay_client.cpp
     src/relay_client.h
+    src/voice_engine.cpp src/voice_engine.h
     src/private_network_config.cpp
     src/private_network_config.h
 )
@@ -53,7 +55,7 @@ qt_add_qml_module(P2PMessenger
         qml/Main.qml
 )
 
-target_link_libraries(P2PMessenger PRIVATE Qt6::Quick Qt6::QuickControls2 Qt6::Network Qt6::WebSockets)
+target_link_libraries(P2PMessenger PRIVATE Qt6::Quick Qt6::QuickControls2 Qt6::Network Qt6::WebSockets Qt6::Multimedia)
 
 if(NOT WIN32 AND NOT ANDROID)
     target_link_libraries(P2PMessenger PRIVATE OpenSSL::Crypto)
@@ -181,12 +183,14 @@ endif()
 if(P2P_MESSENGER_BUILD_RELAY_TESTS AND WIN32)
     if(P2P_MESSENGER_WITH_DAEMON)
         set(_friend_flow_sources
+            src/account_manager.cpp src/account_manager.h
             tests/friend_flow_test.cpp
             src/messenger_controller.cpp src/messenger_controller.h
             src/daemon_bridge.cpp src/daemon_bridge.h
             src/gateway_mapper.cpp src/gateway_mapper.h
             src/private_network_config.cpp src/private_network_config.h
             src/relay_client.cpp src/relay_client.h
+            src/voice_engine.cpp src/voice_engine.h
             src/relay_crypto.cpp src/relay_crypto.h
             src/local_vault.cpp src/local_vault.h)
         foreach(_test IN ITEMS P2PMessengerFriendFlowTest P2PMessengerFriendFlowWithoutDaemonTest)

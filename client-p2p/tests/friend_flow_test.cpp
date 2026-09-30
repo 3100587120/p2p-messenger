@@ -10,7 +10,13 @@
 #include <QJsonArray>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
+#include <QQuickItem>
 #include <iostream>
+#include <QImage>
+#include <QBuffer>
+#include <QUuid>
+#include <QDateTime>
+#include "account_manager.h"
 
 static QString vaultFile(const QString& root, const QString& slot)
 {
@@ -59,11 +65,15 @@ static int emptyProfileRegression(const QString& root, const QString& sourceRoot
     {
         MessengerController reopened;
         if (reopened.profileName() != "Recovered name" || !reopened.setAssistedConnection(true) ||
-            reopened.inviteCode() != invite) return 6;
+            reopened.inviteCode() != invite) { std::cerr << "EMPTY_PROFILE_REOPEN=FAIL " << reopened.lastError().toStdString() << std::endl; return 6; }
     }
     if (identityBefore != readBytes(identityPath) || keyBefore != readBytes(keyPath) ||
         (!welcomeBefore.isEmpty() && welcomeBefore != readBytes(vaultFile(root, "welcome"))) ||
-        QDir(QDir(root).filePath("vault")).entryList({QFileInfo(profilePath).fileName() + ".empty-*"}, QDir::Files).isEmpty()) return 6;
+        QDir(QDir(root).filePath("vault")).entryList({QFileInfo(profilePath).fileName() + ".empty-*"}, QDir::Files).isEmpty()) {
+        std::cerr << "EMPTY_PROFILE_PRESERVATION=FAIL identity=" << (identityBefore == readBytes(identityPath))
+                  << " key=" << (keyBefore == readBytes(keyPath)) << " welcome=" << (welcomeBefore.isEmpty() || welcomeBefore == readBytes(vaultFile(root,"welcome"))) << std::endl;
+        return 6;
+    }
     std::cout << "EMPTY_PROFILE_RECOVERY_IDENTITY_AND_HISTORY_PRESERVED=PASS" << std::endl;
     return 0;
 }
@@ -184,6 +194,111 @@ static int friendPersistenceRegression(const QString& root)
     return 0;
 }
 
+static int featureRegression(const QString& root) {
+    const auto peerRoot = QDir(root).filePath("peer");
+    LocalVault peerVault(peerRoot); RelayCrypto peer; if (!peer.loadOrCreate(peerVault)) return 10;
+    LocalVault vault; RelayCrypto self; if (!self.loadOrCreate(vault)) return 10;
+    const auto peerCode = peer.inviteCode(), peerId = peer.identityId();
+    const auto peerKey = RelayClient::publicKeyFromCode(peerCode);
+    const QVariantList rows {QVariantMap {{"id","private"},{"name","Peer"},{"uri",peerId},{"transport","relay"},{"ready",true},{"relayPublic",peerCode}},
+        QVariantMap {{"id","group"},{"name","Group"},{"transport","relay"},{"ready",true},{"group",true},{"groupId","group-test"},{"members",QStringList {self.inviteCode(),peerCode}}}};
+    if (!vault.saveConversation("__profile",{QVariantMap {{"contacts",rows},{"network",QVariantMap {{"relayEndpoint","ws://localhost:1"},{"assistedConnection",true}}}}})) return 10;
+    QString avatar;
+    {
+        MessengerController c; c.selectContact("group");
+        if (!c.setProfileName("Account") || !c.setGroupNickname("群内名字")) return 10;
+        QImage image(64,64,QImage::Format_ARGB32); image.fill(Qt::blue);
+        const auto file = QDir(root).filePath("avatar.png"); if (!image.save(file) || !c.setAvatar(file)) return 10;
+        avatar = c.avatarUrl(); if (!avatar.startsWith("data:image/png;base64,")) return 10;
+        if (!c.sendSticker(file)) return 10;
+        auto* relay = c.findChild<RelayClient*>(); if (!relay) return 10;
+        relay->packetReceived(peerId,peerKey,QJsonObject {{"type","group_text"},{"groupId","group-test"},{"body","hello"},{"nickname","对方群昵称"}});
+        if (!c.messages().last().toMap().value("body").toString().startsWith("对方群昵称：")) return 10;
+        const QByteArray pcm(32000,'\0'); const auto hash = QString::fromLatin1(QCryptographicHash::hash(pcm,QCryptographicHash::Sha256).toHex());
+        for (int i=0;i<3;i++) relay->packetReceived(peerId,peerKey,QJsonObject {{"type","file_chunk"},{"fileId","voice-test"},{"mediaKind","voice"},{"groupId","group-test"},{"name","voice.pcm"},{"size",pcm.size()},{"count",3},{"index",i},{"sha256",hash},{"data",QString::fromLatin1(pcm.mid(i*12288,12288).toBase64(QByteArray::Base64UrlEncoding))}});
+        if (c.messages().last().toMap().value("kind") != "voice" || QByteArray::fromBase64(c.messages().last().toMap().value("fileData").toString().toLatin1()) != pcm) return 10;
+        c.selectContact("private");
+        const auto callId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        relay->packetReceived(peerId,peerKey,QJsonObject {{"type","call_offer"},{"callId",callId},{"expires",QDateTime::currentSecsSinceEpoch()+30}});
+        if (c.callState() != "ringing" || c.recording()) return 10; // Never answer/start a microphone in automated tests.
+        relay->packetReceived(peerId,peerKey,QJsonObject {{"type","call_end"},{"callId",callId}});
+        if (c.callState() != "idle") return 10;
+    }
+    MessengerController reopened;
+    if (reopened.avatarUrl() != avatar || reopened.profileName() != "Account" || reopened.contacts()[1].toMap().value("myNickname") != "群内名字" || reopened.stickerLibrary().size() != 1) return 10;
+    AccountManager accounts; accounts.createAccount(); const auto secondRoot = accounts.activeRoot();
+    if (secondRoot == root || accounts.profiles().size()!=2 || accounts.activeIndex()!=1) return 10;
+    accounts.updateName("Second"); accounts.selectAccount(0);
+    AccountManager restored; restored.selectAccount(1);
+    if (restored.activeRoot()!=secondRoot || restored.profiles()[1].toMap().value("name")!="Second") return 10;
+    LocalVault secondVault(secondRoot); RelayCrypto secondKey;
+    if (!secondKey.loadOrCreate(secondVault) || secondKey.inviteCode()==self.inviteCode()) return 10;
+    std::cout << "AVATAR_GROUP_NICKNAME_STICKER_VOICE_STORAGE_CALL_CONSENT=PASS" << std::endl;
+    return 0;
+}
+
+static int cloudUidRegression(QGuiApplication& app, const QString& root)
+{
+    // Two disposable controllers; every packet goes through the public WSS
+    // service. This is not a physical two-network/Android audio test.
+    qunsetenv("P2P_MESSENGER_ACCOUNT_PROFILE");
+    qputenv("P2P_MESSENGER_DATA_ROOT", QDir(root).filePath("alice").toUtf8());
+    MessengerController alice;
+    qputenv("P2P_MESSENGER_DATA_ROOT", QDir(root).filePath("bob").toUtf8());
+    MessengerController bob;
+    bool requested = false, accepted = false, aliceSent = false, bobSent = false;
+    bool aliceReceived = false, bobReceived = false;
+    if (!alice.setProfileName("Disposable Alice QA") || !bob.setProfileName("Disposable Bob QA")) return 11;
+    QObject::connect(&bob, &MessengerController::pendingRequestsChanged, &app, [&] {
+        if (accepted || bob.pendingRequests().isEmpty()) return;
+        QTimer::singleShot(0, &app, [&] {
+            if (!accepted && !bob.pendingRequests().isEmpty())
+                accepted = bob.acceptFriendRequest(bob.pendingRequests().first());
+        });
+    });
+    const auto sendOnce = [](MessengerController& c, bool& sent, const QString& body) {
+        if (sent) return;
+        for (const auto& item : c.contacts()) {
+            const auto row = item.toMap();
+            if (row.value("transport") == "relay" && row.value("ready").toBool()) {
+                c.selectContact(row.value("id").toString());
+                sent = c.sendMessage(body);
+                return;
+            }
+        }
+    };
+    const auto received = [](const MessengerController& c, const QString& body) {
+        for (const auto& item : c.messages()) {
+            const auto row = item.toMap();
+            if (!row.value("outgoing").toBool() && row.value("body") == body) return true;
+        }
+        return false;
+    };
+    QTimer timer;
+    QObject::connect(&timer, &QTimer::timeout, &app, [&] {
+        if (!requested && !alice.userCode().isEmpty() && !bob.userCode().isEmpty() &&
+            alice.networkStatus().contains(QStringLiteral("自检通过")) &&
+            bob.networkStatus().contains(QStringLiteral("自检通过"))) {
+            requested = alice.addFriendByUid(bob.userCode(), "Bob QA");
+        }
+        if (accepted) {
+            sendOnce(alice, aliceSent, "alice-public-relay-test");
+            sendOnce(bob, bobSent, "bob-public-relay-test");
+            aliceReceived = received(alice, "bob-public-relay-test");
+            bobReceived = received(bob, "alice-public-relay-test");
+        }
+        if (aliceReceived && bobReceived) app.quit();
+    });
+    timer.start(200);
+    QTimer::singleShot(60000, &app, &QCoreApplication::quit);
+    app.exec();
+    const bool pass = requested && accepted && aliceSent && bobSent && aliceReceived && bobReceived;
+    std::cout << "PUBLIC_WSS_UID_FRIEND_ACCEPT_BIDIRECTIONAL_MESSAGES=" << (pass ? "PASS" : "FAIL")
+              << " alice_uid=" << alice.userCode().toStdString() << " bob_uid=" << bob.userCode().toStdString() << std::endl;
+    if (!pass) std::cerr << "alice=" << alice.lastError().toStdString() << " bob=" << bob.lastError().toStdString() << std::endl;
+    return pass ? 0 : 11;
+}
+
 int main(int argc, char** argv)
 {
     qputenv("QT_QPA_PLATFORM", "offscreen");
@@ -191,6 +306,8 @@ int main(int argc, char** argv)
     QTemporaryDir root(QDir::tempPath() + "/friend-flow-XXXXXX");
     if (!root.isValid()) return 2;
     qputenv("P2P_MESSENGER_DATA_ROOT", root.path().toUtf8());
+    if (app.arguments().contains("--cloud-uid-e2e")) return cloudUidRegression(app, root.path());
+    if (app.arguments().contains("--feature-regression")) return featureRegression(root.path());
     if (app.arguments().contains("--qml-smoke")) {
         const auto pathIndex = app.arguments().indexOf("--qml-path");
         const auto path = app.arguments().value(pathIndex + 1);
@@ -214,16 +331,29 @@ int main(int argc, char** argv)
             return 9;
         }
         window->setProperty("minimumWidth", 320);
-        window->setProperty("width", 390);
         window->setProperty("height", 780);
-        QTimer::singleShot(100, &app, &QCoreApplication::quit);
-        app.exec();
+        window->setProperty("showThread", true);
+        for (int width : {320, 390}) {
+            window->setProperty("width", width);
+            QTimer::singleShot(150, &app, &QCoreApplication::quit);
+            app.exec();
+            for (const auto* name : {"chatBack", "chatFile", "chatInput", "chatSend"}) {
+                const auto* item = window->findChild<QQuickItem*>(QString::fromLatin1(name));
+                if (!item || !item->isVisible() || item->width() <= 0) return 9;
+                const auto topLeft = item->mapToScene(QPointF(0, 0));
+                if (topLeft.x() < 0 || topLeft.x() + item->width() > width + 1 ||
+                    topLeft.y() < 0 || topLeft.y() + item->height() > 781) {
+                    std::cerr << "QML overflow: " << name << " width=" << width << std::endl;
+                    return 9;
+                }
+            }
+        }
         if (warnings || !window->property("mobile").toBool()) {
             std::cerr << "QML portrait layout failed: width=" << window->property("width").toInt()
                       << " mobile=" << window->property("mobile").toBool() << " warnings=" << warnings << std::endl;
             return 9;
         }
-        std::cout << "QML_DESKTOP_AND_PORTRAIT_LAYOUT_LOAD=PASS" << std::endl;
+        std::cout << "QML_DESKTOP_AND_320_390_PORTRAIT_CONTROLS_FIT=PASS" << std::endl;
         return 0;
     }
     if (app.arguments().contains("--empty-profile-regression")) {

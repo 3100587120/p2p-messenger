@@ -5,9 +5,10 @@
   "scripts": {
     "dev": "wrangler dev --local",
     "deploy": "wrangler deploy",
-    "test": "node test/router.test.js"
+    "test": "node test/router.test.js && node test/directory.test.js"
   },
   "devDependencies": {
-    "wrangler": "^4.45.0"
+    "https-proxy-agent": "^7.0.6",
+    "wrangler": "4.144.0"
   }
 }

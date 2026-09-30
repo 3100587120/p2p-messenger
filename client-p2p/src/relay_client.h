@@ -27,11 +27,16 @@ public:
     void setEnabled(bool enabled);
     void refreshConnection();
     QString send(const QByteArray& recipientPublicKey, const QJsonObject& message);
+    bool sendLive(const QByteArray& recipientPublicKey, const QJsonObject& message);
+    void enableDirectory(bool enabled);
+    bool lookupUid(const QString& uid);
     QStringList sendBatch(const QByteArray& recipientPublicKey, const QList<QJsonObject>& messages);
     void rejectCurrentPacket();
 
 signals:
     void connectedChanged(bool connected);
+    void uidAssigned(const QString& uid);
+    void uidResolved(const QString& uid, const QString& code);
     void packetReceived(const QString& senderId, const QByteArray& senderPublicKey,
                         const QJsonObject& message);
     void deliveryState(const QString& packetId, const QString& state);
@@ -56,6 +61,11 @@ private:
     QUrl endpoint_;
     bool enabled_ {false};
     bool connected_ {false};
+    bool directoryEnabled_ {false};
+    bool ownerRegistrationNotice_ {false};
+    QString directoryRegistration_;
+    QMap<QString, QString> directoryQueries_;
+    QTimer directoryDeadline_;
     QMap<QString, Outgoing> outbox_;
     QSet<QString> offlineRecipients_;
     QSet<QString> seen_;

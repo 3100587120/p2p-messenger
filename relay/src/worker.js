@@ -1,3 +1,4 @@
+import { UidDirectory } from './directory.js';
 const identity = /^[0-9a-f]{64}$/;
 const packetId = /^[0-9a-f-]{16,64}$/;
 const maxFrameBytes = 65536;
@@ -19,8 +20,9 @@ export default {
 // This service never decrypts or persists messages. Both peers must be online;
 // a sender keeps unacknowledged packets locally and retries on reconnection.
 export class Router {
-  constructor(ctx) {
+  constructor(ctx, env = {}) {
     this.ctx = ctx;
+    this.directory = ctx.storage ? new UidDirectory(ctx.storage, JSON.parse(env.RESERVED_UIDS || '{}'), env.OWNER_DEVICE_SECRET || '') : null;
   }
 
   fetch(request) {
@@ -42,6 +44,22 @@ export class Router {
     }
     let frame;
     try { frame = JSON.parse(data); } catch { socket.send(JSON.stringify({ op: "error", reason: "bad_json" })); return; }
+    if (frame?.op === 'register' || frame?.op === 'lookup') {
+      if (!packetId.test(frame.id)) return;
+      if (!this.directory) { socket.send(JSON.stringify({ op: 'directory_error', id: frame.id, reason: 'directory_unavailable' })); return; }
+      const attachment = socket.deserializeAttachment();
+      const now = Date.now();
+      if (now - (attachment.directoryWindow || 0) > 60000) { attachment.directoryWindow = now; attachment.directoryCount = 0; }
+      attachment.directoryCount = (attachment.directoryCount || 0) + 1;
+      socket.serializeAttachment(attachment);
+      if (attachment.directoryCount > 30) { socket.send(JSON.stringify({ op: 'directory_error', id: frame.id, reason: 'rate_limited' })); return; }
+      const action = frame.op === 'register' ? this.directory.register(sender, frame.code, frame.ownerProof)
+        : this.directory.lookup(frame.uid);
+      return action.then(value => socket.send(JSON.stringify(frame.op === 'register'
+        ? { op: 'registered', id: frame.id, uid: value }
+        : { op: 'lookup_result', id: frame.id, uid: frame.uid, code: value || '' })))
+        .catch(() => socket.send(JSON.stringify({ op: 'directory_error', id: frame.id, reason: 'directory_failed' })));
+    }
     if (frame?.op !== "send" || !identity.test(frame.to) || !packetId.test(frame.id) ||
         typeof frame.envelope !== "string" || frame.envelope.length > 60000) {
       socket.send(JSON.stringify({ op: "error", id: frame?.id, reason: "bad_packet" }));

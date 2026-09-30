@@ -27,6 +27,9 @@ foreach ($key in @([Environment]::GetEnvironmentVariables('Process').Keys)) {
     if ($key -ieq 'PATH') { [Environment]::SetEnvironmentVariable($key, $null, 'Process') }
 }
 [Environment]::SetEnvironmentVariable('Path', $developerPath, 'Process')
+$env:TEMP = Join-Path $repoRoot 'work/build-temp'
+$env:TMP = $env:TEMP
+New-Item -ItemType Directory -Path $env:TEMP -Force | Out-Null
 $sdkInclude = Join-Path $sdkRoot "Include/$sdkVersion"
 $env:INCLUDE = "$sdkInclude\ucrt;$sdkInclude\um;$sdkInclude\shared;$sdkInclude\winrt;$sdkInclude\cppwinrt;" + $env:INCLUDE
 $env:LIB = 'D:\WinSDKLib;' + $env:LIB

@@ -22,3 +22,5 @@ manual-download
 /relay/.wrangler/
 /work/
 /dist/
+/relay/standalone/data/
+/.private/

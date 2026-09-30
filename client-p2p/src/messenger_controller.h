@@ -4,12 +4,14 @@
 #include <QHash>
 #include <QStringList>
 #include <QVariantList>
+#include <QTimer>
 
 #include "daemon_bridge.h"
 #include "gateway_mapper.h"
 #include "local_vault.h"
 #include "private_network_config.h"
 #include "relay_client.h"
+#include "voice_engine.h"
 
 class QTimer;
 
@@ -24,6 +26,9 @@ class MessengerController final : public QObject
     Q_PROPERTY(QString inviteCode READ inviteCode NOTIFY inviteCodeChanged)
     Q_PROPERTY(QString accountId READ accountId NOTIFY accountIdChanged)
     Q_PROPERTY(QString profileName READ profileName NOTIFY profileNameChanged)
+    Q_PROPERTY(QString avatarUrl READ avatarUrl NOTIFY profileNameChanged)
+    Q_PROPERTY(QString userCode READ userCode NOTIFY uidChanged)
+    Q_PROPERTY(QVariantList friendRequests READ friendRequests NOTIFY pendingRequestsChanged)
     Q_PROPERTY(QString directEndpoint READ directEndpoint NOTIFY directEndpointChanged)
     Q_PROPERTY(QString pairingCode READ pairingCode NOTIFY pairingCodeChanged)
     Q_PROPERTY(int listeningPort READ listeningPort NOTIFY listeningPortChanged)
@@ -33,7 +38,12 @@ class MessengerController final : public QObject
     Q_PROPERTY(QStringList pendingGroupRequests READ pendingGroupRequests NOTIFY pendingGroupRequestsChanged)
     Q_PROPERTY(bool assistedConnection READ assistedConnection NOTIFY assistedConnectionChanged)
     Q_PROPERTY(QString relayEndpoint READ relayEndpoint NOTIFY relayEndpointChanged)
+    Q_PROPERTY(bool customRelay READ customRelay NOTIFY relayEndpointChanged)
+    Q_PROPERTY(QVariantList stickerLibrary READ stickerLibrary NOTIFY stickersChanged)
     Q_PROPERTY(QString peerProbeStatus READ peerProbeStatus NOTIFY peerProbeStatusChanged)
+    Q_PROPERTY(bool recording READ recording NOTIFY voiceChanged)
+    Q_PROPERTY(QString callState READ callState NOTIFY voiceChanged)
+    Q_PROPERTY(QString callPeerName READ callPeerName NOTIFY voiceChanged)
 
 public:
     explicit MessengerController(QObject* parent = nullptr);
@@ -47,6 +57,28 @@ public:
     QString inviteCode() const;
     QString accountId() const;
     QString profileName() const;
+    QString avatarUrl() const;
+    QString userCode() const;
+    QVariantList friendRequests() const;
+    Q_INVOKABLE bool setAvatar(const QString& path);
+    Q_INVOKABLE bool setGroupNickname(const QString& name);
+    Q_INVOKABLE bool addFriendByUid(const QString& uid, const QString& remark);
+    Q_INVOKABLE void copyUid();
+    bool recording() const { return recording_; }
+    QString callState() const { return callState_; }
+    QString callPeerName() const { return callPeerName_; }
+    Q_INVOKABLE bool sendSticker(const QString& path);
+    QVariantList stickerLibrary() const { return stickers_; }
+    Q_INVOKABLE bool sendSavedSticker(int index);
+    Q_INVOKABLE void removeSticker(int index);
+    bool customRelay() const;
+    Q_INVOKABLE bool restoreDefaultRelay();
+    Q_INVOKABLE void recordVoice();
+    Q_INVOKABLE void finishVoice(bool send);
+    Q_INVOKABLE void playVoice(const QString& data);
+    Q_INVOKABLE void startCall();
+    Q_INVOKABLE void answerCall();
+    Q_INVOKABLE void endCall();
     QString directEndpoint() const;
     QString pairingCode() const;
     int listeningPort() const;
@@ -83,6 +115,9 @@ public:
     Q_INVOKABLE bool testPeerConnection(const QString& invite);
 
 signals:
+    void uidChanged();
+    void voiceChanged();
+    void stickersChanged();
     void contactsChanged();
     void messagesChanged();
     void activeContactChanged();
@@ -103,12 +138,15 @@ signals:
 
 private:
     QVariantList contacts_;
+    QVariantList stickers_;
     QVariantList messages_;
     QString activeContactId_;
     QString networkStatus_;
     QString accountId_;
     QString inviteCode_;
     QString profileName_;
+    QString profileAvatar_;
+    QString uid_, uidRemark_;
     QString directEndpoint_;
     QString mappedEndpoint_;
     int listeningPort_ {0};
@@ -119,7 +157,7 @@ private:
     QStringList pendingRequests_;
     QStringList pendingGroupRequests_;
     PrivateNetworkConfig networkConfig_;
-    bool assistedConnection_ {false};
+    bool assistedConnection_ {true};
     QString relayEndpoint_;
     QString peerProbeStatus_;
     QString peerProbePacketId_;
@@ -127,12 +165,23 @@ private:
     bool selfTestPassed_ {false};
     bool profileReadable_ {true};
     QVariantMap pendingRelayRequests_;
+    QVariantMap pendingRelayProfiles_;
     QVariantMap pendingRelayGroups_;
     QVariantMap incomingRelayFiles_;
     DaemonBridge daemon_;
     GatewayMapper gatewayMapper_;
     LocalVault vault_;
     RelayClient relay_;
+    VoiceEngine voice_;
+    QTimer callDeadline_;
+    bool recording_ {false};
+    QString recordingContact_, callState_ {QStringLiteral("idle")}, callPeerName_, callId_, callPeerId_;
+    QByteArray callKey_;
+    int callSequence_ {0}, receivedSequence_ {-1};
+    QVariantMap activeEntry() const;
+    bool sendMedia(const QByteArray& data, const QString& kind, const QString& contactId);
+    void receiveCall(const QString& sender, const QByteArray& key, const QJsonObject& message);
+    void broadcastProfile();
     QHash<QString, QString> androidDownloadDestinations_;
     QHash<QString, QString> androidDownloadPaths_;
 

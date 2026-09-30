@@ -7,6 +7,10 @@
 #include <QUrlQuery>
 #include <QUuid>
 #include <QSslSocket>
+#include <QRegularExpression>
+#include <QMessageAuthenticationCode>
+#include <QDateTime>
+#include <QStandardPaths>
 
 namespace {
 constexpr auto outboxSlot = "__relay_outbox";
@@ -22,6 +26,13 @@ RelayClient::RelayClient(LocalVault& vault, QObject* parent)
     : QObject(parent), vault_(vault)
 {
     crypto_.loadOrCreate(vault_);
+    directoryDeadline_.setSingleShot(true);
+    directoryDeadline_.setInterval(12000);
+    connect(&directoryDeadline_, &QTimer::timeout, this, [this] {
+        if (!directoryRegistration_.isEmpty() || !directoryQueries_.isEmpty())
+            emit errorOccurred(tr("账号目录未响应：中继可能尚未升级或无法访问，UID 注册/查找未完成"));
+        directoryRegistration_.clear(); directoryQueries_.clear();
+    });
     // Old builds left zero-length metadata files. Recover only those queues;
     // the identity and nonempty unreadable ciphertext must never be reset.
     for (const auto* slot : {outboxSlot, seenSlot})
@@ -81,6 +92,7 @@ RelayClient::RelayClient(LocalVault& vault, QObject* parent)
         pendingError_.clear();
         failureReported_ = false;
         emit connectedChanged(true);
+        enableDirectory(directoryEnabled_);
         resendOutbox();
     });
     connect(&socket_, &QWebSocket::disconnected, this, [this] {
@@ -109,6 +121,49 @@ bool RelayClient::hasEndpoint() const
 }
 QString RelayClient::identityId() const { return crypto_.identityId(); }
 QString RelayClient::inviteCode() const { return crypto_.inviteCode(); }
+void RelayClient::enableDirectory(bool enabled)
+{
+    directoryEnabled_ = enabled;
+    if (!enabled || !connected_) return;
+    directoryRegistration_ = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    QJsonObject registration {{"op", "register"}, {"id", directoryRegistration_}, {"code", inviteCode()}};
+#ifdef Q_OS_WIN
+    // Only provisioned on the owner's PC, never included in an installation package.
+    // Do not read real credentials from isolated acceptance test profiles.
+    if (qEnvironmentVariable("P2P_MESSENGER_DATA_ROOT").isEmpty() || qEnvironmentVariableIsSet("P2P_MESSENGER_ACCOUNT_PROFILE")) {
+        LocalVault device(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation));
+        const auto rows = device.loadConversation("__owner_device");
+        if (!rows.isEmpty()) {
+            const auto secret = QByteArray::fromBase64(rows.first().toMap().value("secret").toString().toLatin1());
+            if (secret.size() == 32) {
+                if (!rows.first().toMap().value("enabled",false).toBool()) {
+                    directoryRegistration_.clear();
+                    if (!ownerRegistrationNotice_) {
+                        ownerRegistrationNotice_ = true;
+                        emit errorOccurred(tr("这台电脑的预留 UID 注册按你的要求暂缓；1–10 尚未绑定。暂时可使用完整配对码加好友。"));
+                    }
+                    return;
+                }
+                const auto timestamp = QDateTime::currentSecsSinceEpoch();
+                const auto text = QByteArrayLiteral("SD-OWNER|") + identityId().toLatin1() + '|' + QByteArray::number(timestamp);
+                const auto mac = QMessageAuthenticationCode::hash(text, secret, QCryptographicHash::Sha256).toHex();
+                registration.insert("ownerProof", QJsonObject {{"timestamp", timestamp}, {"mac", QString::fromLatin1(mac)}});
+            }
+        }
+    }
+#endif
+    socket_.sendTextMessage(QString::fromUtf8(QJsonDocument(registration).toJson(QJsonDocument::Compact)));
+    directoryDeadline_.start();
+}
+bool RelayClient::lookupUid(const QString& uid)
+{
+    if (!connected_ || !directoryQueries_.isEmpty()) return false;
+    const auto id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    directoryQueries_.insert(id, uid);
+    socket_.sendTextMessage(QString::fromUtf8(QJsonDocument(QJsonObject {
+        {"op", "lookup"}, {"id", id}, {"uid", uid}}).toJson(QJsonDocument::Compact)));
+    directoryDeadline_.start(); return true;
+}
 QByteArray RelayClient::publicKeyFromCode(const QString& code) { return RelayCrypto::publicKeyFromCode(code); }
 QString RelayClient::idForPublicKey(const QByteArray& key) { return RelayCrypto::idForPublicKey(key); }
 
@@ -200,6 +255,17 @@ QString RelayClient::send(const QByteArray& recipientPublicKey, const QJsonObjec
     return ids.isEmpty() ? QString {} : ids.first();
 }
 
+bool RelayClient::sendLive(const QByteArray& key, const QJsonObject& message)
+{
+    if (!connected_ || socket_.bytesToWrite() > 128000) return false;
+    const auto to = idForPublicKey(key);
+    const auto id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    const auto envelope = crypto_.seal(key, id, message);
+    if (to.isEmpty() || envelope.isEmpty() || envelope.size() > 56000) return false;
+    sendFrame(id, {to, envelope});
+    return true;
+}
+
 QStringList RelayClient::sendBatch(const QByteArray& recipientPublicKey, const QList<QJsonObject>& messages)
 {
     const auto to = idForPublicKey(recipientPublicKey);
@@ -276,6 +342,23 @@ void RelayClient::onFrame(const QString& text)
     if (!document.isObject()) return;
     const auto frame = document.object();
     const auto op = frame.value(QStringLiteral("op")).toString();
+    const auto directoryId = frame.value(QStringLiteral("id")).toString();
+    if (op == "registered" && !directoryRegistration_.isEmpty() && directoryId == directoryRegistration_) {
+        const auto uid = frame.value("uid").toString();
+        if (!QRegularExpression(QStringLiteral("^[1-9][0-9]{0,15}$")).match(uid).hasMatch()) return;
+        directoryRegistration_.clear(); emit uidAssigned(uid);
+        if (directoryQueries_.isEmpty()) directoryDeadline_.stop(); return;
+    }
+    if (op == "lookup_result" && directoryQueries_.contains(directoryId)) {
+        const auto uid = directoryQueries_.take(directoryId);
+        if (frame.value("uid").toString() != uid) return;
+        emit uidResolved(uid, frame.value("code").toString());
+        if (directoryRegistration_.isEmpty() && directoryQueries_.isEmpty()) directoryDeadline_.stop(); return;
+    }
+    if (op == "directory_error" && (directoryId == directoryRegistration_ || directoryQueries_.contains(directoryId))) {
+        directoryRegistration_.clear(); directoryQueries_.clear(); directoryDeadline_.stop();
+        emit errorOccurred(tr("UID 服务暂不可用：%1").arg(frame.value("reason").toString())); return;
+    }
     if (op == QStringLiteral("relay")) {
         const auto id = frame.value(QStringLiteral("id")).toString();
         const auto status = frame.value(QStringLiteral("status")).toString();
@@ -298,6 +381,12 @@ void RelayClient::onFrame(const QString& text)
     if (!valid) return;
     const auto nested = QJsonDocument::fromJson(fromBase64(QString::fromLatin1(envelope)));
     const auto senderPublic = fromBase64(nested.object().value(QStringLiteral("pk")).toString());
+    if (message.value(QStringLiteral("type")).toString().startsWith(QStringLiteral("call_"))) {
+        // Live audio/signalling are authenticated, but never saved or replayed
+        // as offline messages. The call controller checks session and sequence.
+        emit packetReceived(from, senderPublic, message);
+        return;
+    }
     if (message.value(QStringLiteral("type")) == QStringLiteral("ack")) {
         const auto original = message.value(QStringLiteral("id")).toString();
         if (outbox_.contains(original) && outbox_.value(original).to == from) {

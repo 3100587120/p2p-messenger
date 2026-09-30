@@ -6,6 +6,9 @@ param(
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path $PSScriptRoot -Parent
 if (-not $BuildRoot) { $BuildRoot = Join-Path $repo 'work' }
+$env:TEMP = Join-Path $BuildRoot 'build-temp'
+$env:TMP = $env:TEMP
+New-Item -ItemType Directory -Path $env:TEMP -Force | Out-Null
 $sdk = Join-Path $BuildRoot 'android-sdk'
 $ndk = Join-Path $sdk 'ndk/29.0.14206865'
 $cmake = Join-Path $sdk 'cmake/4.1.2/bin/cmake.exe'
