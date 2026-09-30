@@ -339,6 +339,7 @@ MessengerController::MessengerController(QObject* parent)
         for (auto& item : contacts_) {
             auto entry = item.toMap();
             if (entry.value(QStringLiteral("requestPacketId")).toString() != packetId) continue;
+            if (entry.value(QStringLiteral("ready")).toBool()) continue;
             if (state == QStringLiteral("recipient_offline"))
                 entry.insert(QStringLiteral("status"), tr("对方未连接当前中继，申请将自动重试"));
             else if (state == QStringLiteral("forwarded"))
@@ -1388,6 +1389,22 @@ bool MessengerController::acceptFriendRequest(const QString& contactUri)
         pendingRelayRequests_.remove(contactUri);
         pendingRequests_.removeAll(contactUri);
         emit pendingRequestsChanged();
+        // Both users can send a request at the same time. Upgrade the existing
+        // outgoing row instead of creating two sessions for the same peer.
+        for (auto& item : contacts_) {
+            auto entry = item.toMap();
+            if (entry.value(QStringLiteral("transport")).toString() != QStringLiteral("relay") ||
+                entry.value(QStringLiteral("group")).toBool() ||
+                entry.value(QStringLiteral("uri")).toString() != contactUri) continue;
+            entry.insert(QStringLiteral("relayPublic"), peerCode);
+            entry.insert(QStringLiteral("ready"), true);
+            entry.insert(QStringLiteral("status"), tr("已验证"));
+            item = entry;
+            saveProfile();
+            emit contactsChanged();
+            selectContact(entry.value(QStringLiteral("id")).toString());
+            return true;
+        }
         const auto id = QUuid::createUuid().toString(QUuid::WithoutBraces);
         auto entry = contact(id, tr("好友 %1").arg(contactUri.left(8)), tr("已验证"));
         entry.insert(QStringLiteral("transport"), QStringLiteral("relay"));

@@ -51,6 +51,23 @@ void startAndroidAcceptance(QCoreApplication& app, MessengerController& controll
     if (peer.isEmpty()) return;
     struct State { bool queued = false; bool accepted = false; bool sent = false; bool delivered = false; bool received = false; bool done = false; };
     const auto state = std::make_shared<State>();
+    const auto expectedPeer = RelayClient::idForPublicKey(RelayClient::publicKeyFromCode(peer));
+    QObject::connect(&controller, &MessengerController::pendingRequestsChanged, &app,
+        [&controller, expectedPeer] {
+            if (!controller.pendingRequests().contains(expectedPeer)) return;
+            QTimer::singleShot(0, &controller, [&controller, expectedPeer] {
+                if (!controller.pendingRequests().contains(expectedPeer)) return;
+                LocalVault saved;
+                const auto profiles = saved.loadConversation("__profile");
+                if (profiles.isEmpty() || !profiles.first().toMap().value("pendingRelayRequests")
+                    .toMap().contains(expectedPeer)) {
+                    qWarning().noquote() << "P2P_ANDROID_REQUEST_PERSISTENCE=FAIL";
+                    return;
+                }
+                qInfo().noquote() << "P2P_ANDROID_INCOMING_REQUEST_ACCEPTED="
+                                 << controller.acceptFriendRequest(expectedPeer);
+            });
+        });
     const auto finish = [&app, state] {
         if (state->accepted && state->sent && state->delivered && state->received && !state->done) {
             state->done = true;

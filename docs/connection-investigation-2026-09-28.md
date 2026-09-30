@@ -66,3 +66,49 @@ passed against the public relay. Android version advanced to 0.4.8-test (12).
 The user's exact latest failure is still unconfirmed. A question asking the
 current popup text is pending. Cloudflare ingress permissions remain blocked.
 Do not claim these changes prove the user's Android friend request is fixed.
+
+## 2026-09-30: Android key and assisted identity fixes
+
+- Fixed custom Java class lookup on Qt native threads using
+  `QJniEnvironment::findClass`, rather than raw JNI `FindClass`.
+- Explicitly use RSA-OAEP SHA-256 with MGF1 SHA-1 for both key wrapping and
+  Android Keystore unwrapping. A new wrapped key is persisted only after a
+  successful unwrap comparison. Existing missing/unreadable keys are NOT reset.
+- The independent relay identity no longer waits for a Jami account/invitation
+  when switching modes, naming the account or submitting an assisted request.
+- Load the encrypted profile independently of the optional direct account ID.
+  Keep relay contacts, pending requests and local history when the direct
+  identity changes. Old direct sessions are marked as needing re-pairing.
+- Refuse to overwrite a present but unreadable profile. Startup errors now
+  open the failure popup instead of silently opening a fresh-account form.
+- Added an APK debug-only intent acceptance entry, isolated local test records,
+  production MessengerController and real TLS/Keystore operations. PASS requires
+  friend acceptance, an incoming message and an authenticated outgoing receipt.
+
+### Evidence and limits
+
+Windows engine-independent profile/name/history tests and encryption/tamper/
+identity-persistence tests passed. The Worker unit tests passed (3/3).
+
+ARM64 APK run 36661447625 on a separate GitHub network reported:
+
+```
+P2P_ANDROID_TLS= true backend= openssl version= OpenSSL 3.1.8 11 Feb 2025
+P2P_ANDROID_VAULT= PASS
+```
+
+It then encountered SIGILL in the emulator's ARM native translation while
+initializing the optional direct engine; it did NOT deliver a friend request.
+The full UI run 36658980511 could not start an ARM emulator on GitHub's Apple
+Silicon VM (HVF_UNSUPPORTED). Neither result is Android UI acceptance.
+
+The headless APK acceptance path now explicitly disables the optional direct
+engine using `P2P_MESSENGER_DISABLE_DIRECT_ENGINE=1`; normal launches do not.
+This proves only auxiliary transport, Keystore and application controller
+behavior if it passes, not direct connectivity or on-device UI rendering.
+
+No physical Android device is connected. The user's exact network route to the
+workers.dev endpoint and compatibility with any previously unreadable vault
+remain unverified. Do not substitute a same-LAN test for this missing evidence.
+Browser restrictions on the Cloudflare account remain in force; no alternative
+account access has been used to bypass them.

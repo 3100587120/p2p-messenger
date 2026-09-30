@@ -61,6 +61,22 @@ int main(int argc, char** argv)
     if (app.arguments().contains("--identity-regression")) return identityRegression();
     MessengerController controller;
     bool invitationPrinted = false, accepted = false, receivedText = false, sentText = false;
+    const bool reciprocal = app.arguments().contains("--reciprocal");
+    bool reciprocalRequested = false;
+    if (reciprocal) {
+        QObject::connect(&controller, &MessengerController::contactsChanged, &app, [&] {
+            if (accepted) return;
+            for (const auto& value : controller.contacts()) {
+                const auto row = value.toMap();
+                if (row.value("transport") == "relay" && row.value("ready").toBool()) {
+                    accepted = true;
+                    std::cout << "RECIPROCAL_ACCEPTED=1" << std::endl;
+                    QTimer::singleShot(0, &app, [&] { sentText = controller.sendMessage("controller-to-cloud"); });
+                    break;
+                }
+            }
+        });
+    }
     QObject::connect(&controller, &MessengerController::lastErrorChanged, &app, [&] {
         std::cerr << "controller_error=" << controller.lastError().toStdString() << std::endl;
     });
@@ -73,6 +89,15 @@ int main(int argc, char** argv)
             const auto profiles = saved.loadConversation("__profile");
             if (profiles.isEmpty() || profiles.first().toMap().value("pendingRelayRequests").toMap().isEmpty()) {
                 std::cerr << "request was not persisted" << std::endl; app.exit(7); return;
+            }
+            if (reciprocal) {
+                if (reciprocalRequested) return;
+                const auto peerId = controller.pendingRequests().first();
+                const auto peerCode = QStringLiteral("SD1-") + profiles.first().toMap()
+                    .value("pendingRelayRequests").toMap().value(peerId).toString();
+                reciprocalRequested = controller.addContact("Android receiver", peerCode);
+                std::cout << "RECIPROCAL_REQUEST_QUEUED=" << reciprocalRequested << std::endl;
+                return;
             }
             accepted = controller.acceptFriendRequest(controller.pendingRequests().first());
             std::cout << "CONTROLLER_ACCEPTED=" << accepted << std::endl;
