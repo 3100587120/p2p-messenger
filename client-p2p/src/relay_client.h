@@ -31,14 +31,20 @@ public:
     bool sendLive(const QByteArray& recipientPublicKey, const QJsonObject& message);
     void enableDirectory(bool enabled);
     bool lookupUid(const QString& uid);
+    bool lookupPending() const {return !directoryQueries_.isEmpty();}
+    bool cancelContactPackets(const QString& peerId,const QString& groupId);
     bool registerPasswordAccount(const QString& password, const QString& name);
     bool loginPasswordAccount(const QString& uid, const QString& password);
+    bool loginPending() const { return loginRequested_; }
+    QString loginUid() const {return loginUid_;}
+    void cancelLogin();
     bool passwordConfigured() const { return passwordConfigured_; }
     bool registrationPending() const { return !registrationAuth_.isEmpty(); }
     QStringList sendBatch(const QByteArray& recipientPublicKey, const QList<QJsonObject>& messages);
     void rejectCurrentPacket();
 
 signals:
+    void loginStateChanged();
     void connectedChanged(bool connected);
     void uidAssigned(const QString& uid);
     void registrationDeferredChanged();
@@ -54,6 +60,7 @@ private:
     struct Outgoing {
         QString to;
         QByteArray envelope;
+        QString scope;
     };
     LocalVault& vault_;
     RelayCrypto crypto_;

@@ -22,6 +22,11 @@ class MessengerController final : public QObject
     Q_PROPERTY(QVariantList messages READ messages NOTIFY messagesChanged)
     Q_PROPERTY(QString activeContactId READ activeContactId NOTIFY activeContactChanged)
     Q_PROPERTY(QString activeContactName READ activeContactName NOTIFY activeContactChanged)
+    Q_PROPERTY(QVariantMap activeContactDetails READ activeContactDetails NOTIFY activeContactChanged)
+    Q_PROPERTY(bool activeIsGroup READ activeIsGroup NOTIFY activeContactChanged)
+    Q_PROPERTY(bool playingVoice READ playingVoice NOTIFY voiceChanged)
+    Q_PROPERTY(QString playingVoiceData READ playingVoiceData NOTIFY voiceChanged)
+    Q_PROPERTY(QString screenshotPreview READ screenshotPreview NOTIFY screenshotChanged)
     Q_PROPERTY(QString networkStatus READ networkStatus NOTIFY networkStatusChanged)
     Q_PROPERTY(QString inviteCode READ inviteCode NOTIFY inviteCodeChanged)
     Q_PROPERTY(QString accountId READ accountId NOTIFY accountIdChanged)
@@ -31,6 +36,9 @@ class MessengerController final : public QObject
     Q_PROPERTY(QString registrationStatus READ registrationStatus NOTIFY registrationStatusChanged)
     Q_PROPERTY(bool passwordConfigured READ passwordConfigured NOTIFY uidChanged)
     Q_PROPERTY(bool registrationPending READ registrationPending NOTIFY registrationStatusChanged)
+    Q_PROPERTY(bool loginPending READ loginPending NOTIFY registrationStatusChanged)
+    Q_PROPERTY(QString loginUid READ loginUid NOTIFY registrationStatusChanged)
+    Q_PROPERTY(bool friendLookupPending READ friendLookupPending NOTIFY registrationStatusChanged)
     Q_PROPERTY(QVariantList friendRequests READ friendRequests NOTIFY pendingRequestsChanged)
     Q_PROPERTY(QString directEndpoint READ directEndpoint NOTIFY directEndpointChanged)
     Q_PROPERTY(QString pairingCode READ pairingCode NOTIFY pairingCodeChanged)
@@ -56,6 +64,24 @@ public:
     QVariantList messages() const;
     QString activeContactId() const;
     QString activeContactName() const;
+    QVariantMap activeContactDetails() const {return activeEntry();}
+    bool activeIsGroup() const {const auto row=activeEntry();return row.value("group").toBool() && (!row.value("groupId").toString().isEmpty() || !row.value("conversationId").toString().isEmpty());}
+    bool playingVoice() const {return voice_.playing();}
+    QString playingVoiceData() const {return playingVoice()?playingVoiceData_:QString();}
+    QString screenshotPreview() const {return screenshotPreview_;}
+    Q_INVOKABLE void captureScreenshot();
+    Q_INVOKABLE bool sendScreenshot();
+    Q_INVOKABLE void discardScreenshot(){screenshotPreview_.clear();emit screenshotChanged();}
+    Q_INVOKABLE void stopVoicePlayback(){voice_.stopPlayback();}
+    Q_INVOKABLE bool copyMessage(int index);
+    Q_INVOKABLE QVariantMap messageSenderDetails(int index) const;
+    Q_INVOKABLE bool addMessageSender(int index);
+    Q_INVOKABLE bool deleteLocalMessage(int index);
+    Q_INVOKABLE bool forwardMessage(int index,const QString& targetId);
+    Q_INVOKABLE bool removeActiveContact();
+    Q_INVOKABLE bool renameGroup(const QString& name);
+    Q_INVOKABLE void chooseGroupAvatar();
+    Q_INVOKABLE bool setGroupAvatar(const QString& path);
     QString networkStatus() const;
     QString inviteCode() const;
     QString accountId() const;
@@ -65,6 +91,10 @@ public:
     QString registrationStatus() const;
     bool passwordConfigured() const { return relay_.passwordConfigured(); }
     bool registrationPending() const { return relay_.registrationPending(); }
+    bool loginPending() const {return relay_.loginPending();}
+    QString loginUid() const {return relay_.loginUid();}
+    bool friendLookupPending() const {return relay_.lookupPending();}
+    Q_INVOKABLE void cancelLogin() {relay_.cancelLogin();}
     Q_INVOKABLE bool registerAccount(const QString& name, const QString& password);
     Q_INVOKABLE bool loginAccount(const QString& uid, const QString& password);
     QVariantList friendRequests() const;
@@ -130,6 +160,9 @@ public:
     Q_INVOKABLE bool testPeerConnection(const QString& invite);
 
 signals:
+    void operationCompleted(const QString& title,const QString& message);
+    void screenshotChanged();
+    void groupAvatarPickerRequested();
     void photoPickerRequested();
     void notificationPermissionRequested();
     void incomingNotice(const QString& title, const QString& text);
@@ -189,11 +222,14 @@ private:
     QVariantMap pendingRelayProfiles_;
     QVariantMap pendingRelayGroups_;
     QVariantMap incomingRelayFiles_;
+    QStringList leftGroups_;
     DaemonBridge daemon_;
     GatewayMapper gatewayMapper_;
     LocalVault vault_;
     RelayClient relay_;
     VoiceEngine voice_;
+    QString playingVoiceData_;
+    QString screenshotPreview_;
     QTimer callDeadline_;
     QTimer callHeartbeat_;
     QString callPing_;
@@ -202,9 +238,11 @@ private:
     QByteArray callKey_;
     int callSequence_ {0}, receivedSequence_ {-1};
     QVariantMap activeEntry() const;
-    bool sendMedia(const QByteArray& data, const QString& kind, const QString& contactId);
+    bool sendMedia(const QByteArray& data, const QString& kind, const QString& contactId,const QString& fileName = {});
     void receiveCall(const QString& sender, const QByteArray& key, const QJsonObject& message);
     void broadcastProfile();
+    void broadcastGroupProfile();
+    void broadcastGroupMemberProfile(const QVariantMap& group);
     QHash<QString, QString> androidDownloadDestinations_;
     QHash<QString, QString> androidDownloadPaths_;
 
@@ -212,6 +250,7 @@ private:
     void appendMessageForContact(const QString& contactId, const QString& body, bool outgoing,
                                  const QString& kind = QStringLiteral("text"));
     bool storeMessageForContact(const QString& contactId, const QVariantMap& message);
+    void updateMessageDelivery(const QString& packetId,const QString& state);
     bool saveProfile();
     void setError(const QString& error);
     QString contactName(const QString& id) const;

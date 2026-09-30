@@ -16,6 +16,7 @@ public:
     Q_INVOKABLE bool createAccount();
     Q_INVOKABLE bool beginLogin(const QString& uid, const QString& password);
     QStringList takeLogin();
+    bool completeLogin(const QString& uid,const QString& inviteCode);
     Q_INVOKABLE void selectAccount(int index);
 signals:
     void profilesChanged();
@@ -24,6 +25,6 @@ signals:
 private:
     QString base_, active_;
     QVariantList profiles_;
-    QString loginUid_, loginPassword_;
+    QString loginUid_, loginPassword_,loginExpectedUid_;
     bool persist();
 };

@@ -10,6 +10,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.MediaStore;
+import android.content.pm.PackageManager;
 import androidx.core.content.FileProvider;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -36,20 +37,35 @@ public final class AvatarPhotoActivity extends Activity {
         if (state != null) { String saved=state.getString("cameraUri"); if(saved!=null)cameraUri=Uri.parse(saved); return; }
         try {
             if (mode==4) {
+                if(Build.VERSION.SDK_INT>=23 && checkSelfPermission("android.permission.CAMERA")!=PackageManager.PERMISSION_GRANTED){requestPermissions(new String[]{"android.permission.CAMERA"},8212);return;}
+                launchCamera();return;
+            }
+            openPicker();
+        } catch (Exception e) { result("", mode==4?"拍照无法启动，请检查相机权限和系统相机应用":"无法打开系统相册，请检查系统图片选择器"); finish(); }
+    }
+    private void launchCamera() {
+        try {
                 File pictures=new File(getCacheDir(),"camera"); if (!pictures.exists() && !pictures.mkdirs()) throw new Exception();
                 File target=File.createTempFile("photo-",".jpg",pictures);
                 cameraUri=FileProvider.getUriForFile(this,getPackageName()+".qtprovider",target);
                 Intent camera=new Intent(MediaStore.ACTION_IMAGE_CAPTURE); camera.putExtra(MediaStore.EXTRA_OUTPUT,cameraUri);
                 camera.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
                 camera.setClipData(android.content.ClipData.newRawUri("photo",cameraUri));
-                startActivityForResult(camera,8211); return;
-            }
+                startActivityForResult(camera,8211);
+        }catch(android.content.ActivityNotFoundException e){result("","手机没有可用的相机应用，请启用系统相机");finish();}
+        catch(SecurityException e){result("","相机权限未开启，请到系统应用设置允许相机权限");finish();}
+        catch(Exception e){result("","拍照文件无法创建，请检查可用存储空间");finish();}
+    }
+    private void openPicker() throws Exception {
             Intent picker = new Intent(mode == 2 ? Intent.ACTION_OPEN_DOCUMENT : Build.VERSION.SDK_INT >= 33 ? "android.provider.action.PICK_IMAGES" : Intent.ACTION_GET_CONTENT);
             picker.setType(mode == 2 ? "*/*" : "image/*");
             if (mode == 2 || Build.VERSION.SDK_INT < 33) picker.addCategory(Intent.CATEGORY_OPENABLE);
             picker.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
             startActivityForResult(picker, 8211);
-        } catch (Exception e) { result("", "无法打开系统相册，请检查系统图片选择器"); finish(); }
+    }
+    @Override public void onRequestPermissionsResult(int request,String[] permissions,int[] grants) {
+        super.onRequestPermissionsResult(request,permissions,grants);
+        if(request==8212){if(grants.length>0&&grants[0]==PackageManager.PERMISSION_GRANTED)launchCamera();else{result("","相机权限被拒绝，请到系统应用设置开启相机权限后重试");finish();}}
     }
     @Override protected void onSaveInstanceState(Bundle state) { super.onSaveInstanceState(state); if(cameraUri!=null)state.putString("cameraUri",cameraUri.toString()); }
     @Override protected void onActivityResult(int request, int code, Intent data) {

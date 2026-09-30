@@ -11,6 +11,13 @@ import android.content.pm.PackageManager;
 
 public final class MessageNotifications {
     private static final String CHANNEL = "messages";
+    public static boolean allowed(Context context) {
+        if(Build.VERSION.SDK_INT>=33 && context.checkSelfPermission("android.permission.POST_NOTIFICATIONS")!=PackageManager.PERMISSION_GRANTED)return false;
+        NotificationManager manager=(NotificationManager)context.getSystemService(Context.NOTIFICATION_SERVICE);
+        if(manager==null || (Build.VERSION.SDK_INT>=24 && !manager.areNotificationsEnabled()))return false;
+        if(Build.VERSION.SDK_INT>=26){NotificationChannel channel=manager.getNotificationChannel(CHANNEL);if(channel!=null && channel.getImportance()==NotificationManager.IMPORTANCE_NONE)return false;}
+        return true;
+    }
     public static void requestPermission(Context context) {
         if (Build.VERSION.SDK_INT >= 33 && context instanceof Activity && context.checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED)
             ((Activity)context).runOnUiThread(() -> ((Activity)context).requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"},8323));

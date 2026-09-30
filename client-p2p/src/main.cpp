@@ -40,6 +40,11 @@ void traceStartup(const char* stage)
 int main(int argc, char* argv[])
 {
     traceStartup("entry");
+#ifdef Q_OS_ANDROID
+    // A QtService context is not an Activity and has no getIntent(). Dispatch
+    // BEFORE debug acceptance code or any Activity/QGuiApplication operations.
+    for(int i=1;i<argc;++i) if(std::strcmp(argv[i],"--message-service")==0)return runMessageService(argc,argv);
+#endif
 #if defined(Q_OS_ANDROID) && !defined(QT_NO_DEBUG)
     // Optional CI-only path in this exact APK: isolate Keystore/TLS/controller
     // from the emulator's unsupported Qt GUI SIMD instruction translation.
@@ -57,7 +62,6 @@ int main(int argc, char* argv[])
     }
 #endif
 #ifdef Q_OS_ANDROID
-    for(int i=1;i<argc;++i) if(std::strcmp(argv[i],"--message-service")==0)return runMessageService(argc,argv);
     qputenv("QT_BLOCK_EVENT_LOOPS_WHEN_SUSPENDED","0");
 #endif
     QQuickStyle::setStyle(QStringLiteral("Material"));
@@ -117,8 +121,9 @@ int main(int argc, char* argv[])
     qputenv("P2P_MESSENGER_OWNER_DEVICE_ROOT",accounts.baseRoot().toUtf8());
     auto messenger = std::make_unique<MessengerController>();
     traceStartup("controller-ready");
-    QQmlApplicationEngine engine;
     NotificationService notifications;
+    QQmlApplicationEngine engine;
+    notifications.setSessionRoot(accounts.baseRoot());
     engine.rootContext()->setContextProperty(QStringLiteral("notificationService"),&notifications);
     engine.rootContext()->setContextProperty(QStringLiteral("messenger"), messenger.get());
     engine.rootContext()->setContextProperty(QStringLiteral("accountManager"), &accounts);
@@ -126,6 +131,7 @@ int main(int argc, char* argv[])
         QObject::connect(messenger.get(), &MessengerController::incomingNotice, &notifications, &NotificationService::show);
         QObject::connect(messenger.get(), &MessengerController::notificationPermissionRequested, &notifications, &NotificationService::requestPermission);
         QObject::connect(messenger.get(),&MessengerController::uidChanged,&notifications,[&]{if(!messenger->userCode().isEmpty())notifications.accountReady();});
+        QObject::connect(messenger.get(),&MessengerController::uidChanged,&accounts,[&]{accounts.completeLogin(messenger->userCode(),messenger->inviteCode());});
         accounts.updateName(messenger->profileName());
         QObject::connect(messenger.get(), &MessengerController::profileNameChanged, &accounts, [&] { accounts.updateName(messenger->profileName()); });
     };
@@ -140,20 +146,18 @@ int main(int argc, char* argv[])
             // That is not a real handover to the Android background process.
             QScopedValueRollback<bool> rebuilding(rebuildingProfile, true);
             const auto previousContact=messenger->activeContactId();
-            // Replacing the only window must not enqueue application shutdown.
-            const bool quitOnClose = application.quitOnLastWindowClosed();
-            application.setQuitOnLastWindowClosed(false);
-            for (auto* object : engine.rootObjects()) delete object;
-            engine.rootContext()->setContextProperty(QStringLiteral("messenger"), static_cast<QObject*>(nullptr));
-            messenger.reset();
+            // Keep the native Android window/surface alive during every handover.
+            messenger->suspendForBackground();
+            auto oldMessenger=std::move(messenger);
             qputenv("P2P_MESSENGER_DATA_ROOT", root.toUtf8());
             messenger = std::make_unique<MessengerController>();
             const auto pendingLogin = accounts.takeLogin();
             engine.rootContext()->setContextProperty(QStringLiteral("messenger"), messenger.get());
-            bindProfile(); engine.loadFromModule("P2PMessenger", "Main");
+            bindProfile();
             if (pendingLogin.size()==2) messenger->loginAccount(pendingLogin[0],pendingLogin[1]);
             else messenger->selectContact(previousContact);
-            application.setQuitOnLastWindowClosed(quitOnClose);
+            for(auto* object:engine.rootObjects())QMetaObject::invokeMethod(object,"resetSession");
+            oldMessenger.reset();
             if (engine.rootObjects().isEmpty()) application.exit(1);
         });
     };
@@ -164,10 +168,11 @@ int main(int argc, char* argv[])
     QObject::connect(&application,&QGuiApplication::applicationStateChanged,&engine,[&](Qt::ApplicationState state){
         if(rebuildingProfile)return;
         if((state==Qt::ApplicationHidden || state==Qt::ApplicationSuspended) && (systemPickerOpen() || messenger->voicePermissionPending()))return;
+        if((state==Qt::ApplicationHidden || state==Qt::ApplicationSuspended) && !notifications.backgroundEnabled())return;
         background.setActive(state==Qt::ApplicationActive || state==Qt::ApplicationInactive);
         if(state==Qt::ApplicationActive && !messenger->userCode().isEmpty())notifications.accountReady();
     });
-    QTimer::singleShot(800,&notifications,[&]{if(!messenger->userCode().isEmpty())notifications.accountReady();});
+    if(!messenger->userCode().isEmpty())notifications.accountReady();
 #endif
     engine.loadFromModule("P2PMessenger", "Main");
     traceStartup("qml-loaded");

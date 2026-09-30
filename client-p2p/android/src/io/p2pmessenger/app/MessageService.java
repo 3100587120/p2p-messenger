@@ -51,5 +51,14 @@ public final class MessageService extends QtService {
         startForeground(31005,builder.setSmallIcon(icon).setContentTitle("双点聊 · 后台收消息").setContentText("关闭聊天界面后保持连接，点击返回应用").setContentIntent(click).setOngoing(true).build());
         super.onCreate();
     }
-    @Override public int onStartCommand(Intent intent,int flags,int startId) { return START_STICKY; }
+    public static boolean openAppSettings(Context context) {
+        try {Intent intent=new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,android.net.Uri.parse("package:"+context.getPackageName()));intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);context.startActivity(intent);return true;}catch(Exception error){return false;}
+    }
+    public static void moveToBackground(Context context) {
+        if(context instanceof android.app.Activity)((android.app.Activity)context).runOnUiThread(()->((android.app.Activity)context).moveTaskToBack(true));
+    }
+    @Override public int onStartCommand(Intent intent,int flags,int startId) {
+        super.onStartCommand(intent,flags,startId);
+        return START_STICKY;
+    }
 }

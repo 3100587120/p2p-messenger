@@ -7,6 +7,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include "local_vault.h"
+#include "relay_crypto.h"
 bool AccountManager::resetForPasswordRelease(QString* error) {
     const auto base = qEnvironmentVariable("P2P_MESSENGER_DATA_ROOT").isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) : qEnvironmentVariable("P2P_MESSENGER_DATA_ROOT");
     QSettings marker(QDir(base).filePath("account-reset.ini"),QSettings::IniFormat);
@@ -91,11 +92,34 @@ bool AccountManager::createAccount() {
 }
 bool AccountManager::beginLogin(const QString& uid,const QString& password) {
     if (!QRegularExpression("^[1-9][0-9]{0,15}$").match(uid.trimmed()).hasMatch() || password.size()<8 || password.size()>128) { emit errorOccurred(tr("请输入数字 UID 和 8–128 位密码")); return false; }
-    loginUid_=uid.trimmed(); loginPassword_=password;
-    if (!createAccount()) { loginUid_.clear(); loginPassword_.fill(QChar('\0')); loginPassword_.clear(); return false; }
+    loginUid_=uid.trimmed(); loginPassword_=password; loginExpectedUid_=loginUid_;
+    if (!createAccount()) { loginUid_.clear(); loginExpectedUid_.clear();loginPassword_.fill(QChar('\0')); loginPassword_.clear(); return false; }
     return true;
 }
 QStringList AccountManager::takeLogin() {
     if (loginUid_.isEmpty()) return {};
     const QStringList result {loginUid_,loginPassword_}; loginUid_.clear(); loginPassword_.fill(QChar('\0')); loginPassword_.clear(); return result;
+}
+bool AccountManager::completeLogin(const QString& uid,const QString& inviteCode) {
+    if(loginExpectedUid_.isEmpty() || uid!=loginExpectedUid_)return false;
+    loginExpectedUid_.clear();
+    const auto scratchId=active_;
+    // Only after server password authentication. UID alone is not sufficient:
+    // match the restored cryptographic identity before reusing local records.
+    for(int i=0;i<profiles_.size();++i) {
+        const auto id=profiles_[i].toMap().value("id").toString();if(id==active_)continue;
+        const auto root=id=="default"?base_:QDir(base_).filePath("accounts/"+id);
+        LocalVault vault(root);const auto rows=vault.loadConversation("__profile");
+        if(rows.isEmpty() || rows.first().toMap().value("uid").toString()!=uid || !vault.hasConversation("__relay_identity"))continue;
+        RelayCrypto identity;if(!identity.loadOrCreate(vault) || identity.inviteCode()!=inviteCode)continue;
+        if(!vault.saveConversation("__password_account",{QVariantMap{{"uid",uid}}}))return false;
+        selectAccount(i);if(active_!=id)return false;
+        // Keep the scratch directory as a recoverable authenticated backup,
+        // but do not accumulate duplicate entries on every same-device login.
+        const auto previous=profiles_;
+        for(qsizetype j=profiles_.size();j>0;--j)if(profiles_[j-1].toMap().value("id")==scratchId)profiles_.removeAt(j-1);
+        if(!persist())profiles_=previous;else emit profilesChanged();
+        return true;
+    }
+    return false;
 }

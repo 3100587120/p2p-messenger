@@ -8,6 +8,7 @@
 #include <QCryptographicHash>
 #include <QLockFile>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickItem>
@@ -43,11 +44,14 @@ static int backgroundSessionRegression(QGuiApplication& app,const QString& root)
     if(!ui.claimInitial() || !BackgroundSession::foregroundRequested(root))return 18;
     QLockFile service(QDir(root).filePath("session-owner.lock"));service.setStaleLockTime(0);
     if(service.tryLock(0))return 18;
+    ui.setActive(false);if(!ui.ownsSession() || suspended || !BackgroundSession::foregroundRequested(root))return 18;
+    ui.setActive(true);
+    QFile heartbeat(QDir(root).filePath("background-status.json"));if(!heartbeat.open(QIODevice::WriteOnly))return 18;heartbeat.write(QJsonDocument(QJsonObject{{"at",QDateTime::currentMSecsSinceEpoch()}}).toJson());heartbeat.close();
     ui.setActive(false);if(suspended!=1 || ui.ownsSession() || BackgroundSession::foregroundRequested(root) || !service.tryLock(0))return 18;
     ui.setActive(true);if(!BackgroundSession::foregroundRequested(root) || ui.ownsSession())return 18;
     service.unlock();QTimer::singleShot(1250,&app,&QCoreApplication::quit);app.exec();
     if(!ui.ownsSession() || resumed!=1 || service.tryLock(0))return 18;
-    std::cout<<"GUI_SERVICE_SINGLE_WRITER_LOCK_AND_FOREGROUND_HANDOVER=PASS"<<std::endl;return 0;
+    std::cout<<"GUI_SERVICE_SINGLE_WRITER_HANDOVER_AND_NO_OFFLINE_IF_SERVICE_MISSING=PASS"<<std::endl;return 0;
 }
 
 static QString vaultFile(const QString& root, const QString& slot)
@@ -263,7 +267,7 @@ static int featureRegression(const QString& root) {
     const auto peerKey = RelayClient::publicKeyFromCode(peerCode);
     const QVariantList rows {QVariantMap {{"id","private"},{"name","Peer"},{"uri",peerId},{"transport","relay"},{"ready",true},{"relayPublic",peerCode}},
         QVariantMap {{"id","group"},{"name","Group"},{"transport","relay"},{"ready",true},{"group",true},{"groupId","group-test"},{"members",QStringList {self.inviteCode(),peerCode}}}};
-    if (!vault.saveConversation("__profile",{QVariantMap {{"contacts",rows},{"network",QVariantMap {{"relayEndpoint","ws://localhost:1"},{"assistedConnection",true}}}}})) return 10;
+    if (!vault.saveConversation("__password_account",{QVariantMap {{"uid","11"}}}) || !vault.saveConversation("__profile",{QVariantMap {{"uid","11"},{"contacts",rows},{"network",QVariantMap {{"relayEndpoint","ws://localhost:1"},{"assistedConnection",true}}}}})) return 10;
     QString avatar;
     {
         MessengerController c; c.selectContact("group");
@@ -404,6 +408,43 @@ static int cloudLoginRegression(QGuiApplication& app,const QString& root) {
     return pass?0:16;
 }
 
+static int welcomeRemovalRegression(const QString& root) {
+    LocalVault vault;
+    const QVariantList history {QVariantMap {{"body","keep my real history"},{"outgoing",false}}};
+    const QVariantList oldWelcome {QVariantMap {{"body","legacy onboarding"}}};
+    if(!vault.saveConversation("real-friend",history)||!vault.saveConversation("welcome",oldWelcome)||
+       !vault.saveConversation("__profile",{QVariantMap {{"profileName","Existing account"},{"contacts",QVariantList {
+           QVariantMap {{"id","welcome"},{"name","开始使用"}},QVariantMap {{"id","real-friend"},{"name","Real friend"},{"transport","relay"},{"ready",true}}}}}}))return 19;
+    const auto legacy=readBytes(vaultFile(root,"welcome"));
+    {
+        MessengerController controller;
+        if(controller.contacts().size()!=1 || controller.activeContactId()!="real-friend" || controller.messages()!=history)return 19;
+        controller.selectContact("welcome");if(controller.activeContactId()!="real-friend")return 19;
+        if(!controller.setProfileName("Updated name"))return 19;
+    }
+    if(vault.loadConversation("real-friend")!=history || readBytes(vaultFile(root,"welcome"))!=legacy ||
+        vault.loadConversation("__profile").first().toMap().value("contacts").toList().size()!=1)return 19;
+    qputenv("P2P_MESSENGER_DATA_ROOT",QDir(root).filePath("new-empty").toUtf8());
+    MessengerController empty;if(!empty.contacts().isEmpty()||!empty.activeContactId().isEmpty()||!empty.messages().isEmpty())return 19;
+    LocalVault fresh;if(fresh.hasConversation("welcome"))return 19;
+    std::cout<<"WELCOME_REMOVED_NEW_AND_EXISTING_PROFILES_REAL_HISTORY_PRESERVED=PASS"<<std::endl;return 0;
+}
+
+static int localLoginHistoryRegression(const QString& root) {
+    AccountManager accounts;LocalVault vault(accounts.activeRoot());RelayCrypto identity;
+    const QVariantList history{QVariantMap{{"body","preserve after login"}}};
+    if(!identity.loadOrCreate(vault)||!vault.saveConversation("friend",history)||!vault.saveConversation("__profile",{QVariantMap{{"uid","11"},{"profileName","Original"},{"contacts",QVariantList{QVariantMap{{"id","friend"},{"name","Friend"},{"ready",true}}}}}}))return 20;
+    const auto original=accounts.activeRoot();
+    if(!accounts.beginLogin("11","test-password")||accounts.takeLogin().size()!=2)return 20;
+    if(accounts.completeLogin("11","wrong-identity")||accounts.activeRoot()==original)return 20;
+    if(!accounts.beginLogin("11","test-password")||accounts.takeLogin().size()!=2 || !accounts.completeLogin("11",identity.inviteCode()) || accounts.activeRoot()!=original)return 20;
+    qputenv("P2P_MESSENGER_DATA_ROOT",original.toUtf8());MessengerController controller;
+    controller.selectContact("friend");if(controller.contacts().size()!=1 || controller.messages()!=history)return 20;
+    qputenv("P2P_MESSENGER_DATA_ROOT",QDir(root).filePath("anonymous").toUtf8());MessengerController anonymous;
+    if(anonymous.setAvatar("nonexistent.png") || !anonymous.lastError().contains(QStringLiteral("登录")))return 20;
+    std::cout<<"AUTHENTICATED_IDENTITY_REUSES_LOCAL_FRIENDS_HISTORY_ANONYMOUS_AVATAR_BLOCKED=PASS"<<std::endl;return 0;
+}
+
 static int publicHeadlessMediaRegression(QCoreApplication& app,const QString& root) {
     const auto endpoint=qEnvironmentVariable("P2P_MESSENGER_RELAY_URL");
     if(!endpoint.startsWith("wss://"))return 18;
@@ -411,7 +452,7 @@ static int publicHeadlessMediaRegression(QCoreApplication& app,const QString& ro
     LocalVault aliceVault(aliceRoot),bobVault(bobRoot);RelayCrypto aliceKey,bobKey;
     if(!aliceKey.loadOrCreate(aliceVault)||!bobKey.loadOrCreate(bobVault))return 18;
     const auto profile=[&](LocalVault& vault,const RelayCrypto& peer,const QString& name) {
-        return vault.saveConversation("__profile",{QVariantMap {{"profileName",name},{"contacts",QVariantList {QVariantMap {{"id","peer"},{"name","Peer"},{"uri",peer.identityId()},{"transport","relay"},{"ready",true},{"relayPublic",peer.inviteCode()}}}},{"network",QVariantMap {{"relayEndpoint",endpoint},{"assistedConnection",true}}}}});
+        return vault.saveConversation("__profile",{QVariantMap {{"profileName",name},{"contacts",QVariantList {QVariantMap {{"id","peer"},{"name","Peer"},{"uri",peer.identityId()},{"transport","relay"},{"ready",true},{"relayPublic",peer.inviteCode()}},QVariantMap{{"id","public-group"},{"name","QA group"},{"transport","relay"},{"ready",true},{"group",true},{"groupId","qa-headless-group"},{"members",QStringList{aliceKey.inviteCode(),bobKey.inviteCode()}}}}},{"network",QVariantMap {{"relayEndpoint",endpoint},{"assistedConnection",true}}}}});
     };
     if(!profile(aliceVault,bobKey,"Sender")||!profile(bobVault,aliceKey,"Background receiver"))return 18;
     qputenv("P2P_MESSENGER_DISABLE_DIRECT_ENGINE","1");
@@ -429,6 +470,7 @@ static int publicHeadlessMediaRegression(QCoreApplication& app,const QString& ro
         if(!sent && alice.networkStatus().contains(QStringLiteral("自检通过")) && bob.networkStatus().contains(QStringLiteral("自检通过"))) {
             sent=true;
             if(!alice.sendMessage("public-headless-test") || !alice.sendPhoto(photo) || !alice.sendSticker(photo) || !alice.queueFile(file)){app.quit();return;}
+            alice.selectContact("public-group");if(!alice.sendMessage("public-group-text") || !alice.sendPhoto(photo) || !alice.queueFile(file)){app.quit();return;}alice.selectContact("peer");
             auto* relay=alice.findChild<RelayClient*>();if(!relay){app.quit();return;}
             QList<QJsonObject> packets;
             const auto id=QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -446,12 +488,44 @@ static int publicHeadlessMediaRegression(QCoreApplication& app,const QString& ro
             voice|=row.value("kind")=="voice" && bytes==pcm;
             fileReceived|=row.value("kind")=="file-offer" && bytes=="public-relay-file-fixture";
         }
-        if(text&&photoReceived&&sticker&&voice&&fileReceived&&notifications>=5){pass=true;app.quit();}
+        bool groupText=false,groupPhoto=false,groupFile=false;
+        for(const auto& value:bobVault.loadConversation("public-group")){const auto row=value.toMap();groupText|=row.value("body").toString().contains("public-group-text");groupPhoto|=row.value("kind")=="photo";groupFile|=row.value("kind")=="file-offer";}
+        if(text&&photoReceived&&sticker&&voice&&fileReceived&&groupText&&groupPhoto&&groupFile&&notifications>=8){bob.selectContact("public-group");const auto sender=bob.messageSenderDetails(0);pass=sender.value("uri")==aliceKey.identityId() && sender.value("name")=="Sender";app.quit();}
     });
     timer.start(250);QTimer::singleShot(60000,&app,&QCoreApplication::quit);app.exec();
-    std::cout<<"PUBLIC_WSS_QCORE_NO_WINDOW_PHOTO_VOICE_FILE_TEXT_AND_NOTICES="<<(pass?"PASS":"FAIL")<<std::endl;
+    std::cout<<"PUBLIC_WSS_QCORE_NO_WINDOW_PRIVATE_GROUP_MEMBER_PROFILE_MEDIA_FILES_AND_NOTICES="<<(pass?"PASS":"FAIL")<<std::endl;
     if(!pass)std::cerr<<alice.lastError().toStdString()<<" / "<<bob.lastError().toStdString()<<std::endl;
     return pass?0:18;
+}
+
+static int interactionRegression(const QString& root) {
+    LocalVault vault(root),peerVault(QDir(root).filePath("peer"));RelayCrypto self,peer;
+    if(!self.loadOrCreate(vault)||!peer.loadOrCreate(peerVault))return 21;
+    const auto key=RelayClient::publicKeyFromCode(peer.inviteCode());
+    if(!vault.saveConversation("__password_account",{QVariantMap{{"uid","11"}}}) || !vault.saveConversation("__profile",{QVariantMap{{"uid","11"},{"contacts",QVariantList{
+        QVariantMap{{"id","private"},{"name","Peer"},{"uri",peer.identityId()},{"relayPublic",peer.inviteCode()},{"transport","relay"},{"ready",true},{"group",true}},
+        QVariantMap{{"id","group"},{"name","Group"},{"group",true},{"groupId","qa-group"},{"members",QStringList{self.inviteCode(),peer.inviteCode()}},{"transport","relay"},{"ready",true}}}},{"network",QVariantMap{{"assistedConnection",true},{"relayEndpoint","ws://localhost:1"}}}}}))return 21;
+    MessengerController c;auto* relay=c.findChild<RelayClient*>();if(!relay)return 21;
+    c.selectContact("private");if(c.activeIsGroup())return 21;
+    relay->packetReceived(peer.identityId(),key,QJsonObject{{"type","friend_request"}});if(!c.pendingRequests().isEmpty())return 21;
+    c.selectContact("group");if(!c.activeIsGroup() || !c.renameGroup("New group"))return 21;
+    QImage image(64,64,QImage::Format_RGB32);image.fill(Qt::blue);const auto avatarFile=QDir(root).filePath("group.png");if(!image.save(avatarFile)||!c.setGroupAvatar(avatarFile))return 21;
+    QByteArray raw;QBuffer imageBuffer(&raw);imageBuffer.open(QIODevice::WriteOnly);image.save(&imageBuffer,"PNG");
+    relay->packetReceived(peer.identityId(),key,QJsonObject{{"type","group_member_profile"},{"groupId","qa-group"},{"name","Member profile"},{"avatar",QString::fromLatin1(raw.toBase64())}});
+    relay->packetReceived(peer.identityId(),key,QJsonObject{{"type","group_text"},{"groupId","qa-group"},{"nickname","Nick"},{"body","member message"}});
+    auto details=c.messageSenderDetails(c.messages().size()-1);if(details.value("name")!="Member profile" || details.value("avatar").toString().isEmpty() || details.value("uri")!=peer.identityId())return 21;
+    const auto file=QDir(root).filePath("payload.txt");QFile data(file);if(!data.open(QIODevice::WriteOnly))return 21;data.write("payload");data.close();
+    if(!c.queueFile(file))return 21;auto sent=c.messages().last().toMap();if(sent.value("kind")!="file-offer" || sent.value("packetIds").toStringList().isEmpty())return 21;
+    for(const auto& id:sent.value("packetIds").toStringList())relay->deliveryState(id,"delivered");
+    if(c.messages().last().toMap().value("delivery")!=QStringLiteral("已送达") || !c.forwardMessage(c.messages().size()-1,"private"))return 21;
+    const auto history=c.messages();if(!c.copyMessage(0) || !c.deleteLocalMessage(0) || c.messages().size()!=history.size()-1)return 21;
+    if(!c.removeActiveContact())return 21;
+    for(const auto& v:c.contacts())if(v.toMap().value("id")=="group")return 21;
+    if(vault.loadConversation("group").isEmpty())return 21;
+    c.selectContact("private");if(!c.removeActiveContact() || !c.contacts().isEmpty())return 21;
+    for(const auto& v:vault.loadConversation("__relay_outbox")){const auto row=v.toMap();if(row.value("to")==peer.identityId() && row.value("scope").toString().isEmpty())return 21;}
+    if(!vault.loadConversation("__profile").first().toMap().value("leftGroups").toStringList().contains("qa-group"))return 21;
+    std::cout<<"PRIVATE_GROUP_CLASSIFICATION_MEMBER_AVATAR_DETAILS_FILES_FORWARD_RECEIPTS_DELETE_CANCEL=PASS"<<std::endl;return 0;
 }
 
 int main(int argc, char** argv)
@@ -465,6 +539,9 @@ int main(int argc, char** argv)
     QTemporaryDir root(QDir::tempPath() + "/friend-flow-XXXXXX");
     if (!root.isValid()) return 2;
     qputenv("P2P_MESSENGER_DATA_ROOT", root.path().toUtf8());
+    if(app.arguments().contains("--welcome-removal-regression"))return welcomeRemovalRegression(root.path());
+    if(app.arguments().contains("--local-login-history-regression"))return localLoginHistoryRegression(root.path());
+    if(app.arguments().contains("--interaction-regression"))return interactionRegression(root.path());
     if(app.arguments().contains("--voice-stop-regression"))return VoiceEngineRegression::run();
     if(app.arguments().contains("--background-session-regression"))return backgroundSessionRegression(app,root.path());
     if (app.arguments().contains("--reset-regression")) return resetRegression(root.path());
@@ -475,8 +552,11 @@ int main(int argc, char** argv)
         const auto pathIndex = app.arguments().indexOf("--qml-path");
         const auto path = app.arguments().value(pathIndex + 1);
         if (pathIndex < 0 || !QFileInfo::exists(path)) return 9;
+        LocalVault fixture;
+        if(!fixture.saveConversation("__profile",{QVariantMap {{"profileName","界面预览"},{"contacts",QVariantList {QVariantMap {{"id","preview-friend"},{"name","测试好友"},{"initial","测"},{"status","已连接"},{"transport","relay"},{"ready",true}}}}}}))return 9;
         MessengerController controller;
         controller.setProfileName("界面预览");
+        AccountManager uiAccounts;
         QQmlApplicationEngine engine;
         bool warnings = false;
         QObject::connect(&engine, &QQmlEngine::warnings, &app, [&](const QList<QQmlError>& errors) {
@@ -484,6 +564,7 @@ int main(int argc, char** argv)
             for (const auto& error : errors) std::cerr << error.toString().toStdString() << std::endl;
         });
         engine.rootContext()->setContextProperty("messenger", &controller);
+        engine.rootContext()->setContextProperty("accountManager",&uiAccounts);
         engine.load(QUrl::fromLocalFile(path));
         if (engine.rootObjects().size() != 1) {
             std::cerr << "QML load failed: root_count=" << engine.rootObjects().size() << std::endl;
@@ -517,6 +598,20 @@ int main(int argc, char** argv)
                       << " mobile=" << window->property("mobile").toBool() << " warnings=" << warnings << std::endl;
             return 9;
         }
+        if(!QMetaObject::invokeMethod(window,"openUidLogin"))return 9;
+        QTimer::singleShot(100,&app,&QCoreApplication::quit);app.exec();
+        auto* loginDialog=window->findChild<QObject*>("uidLoginDialog");auto* loginField=window->findChild<QQuickItem*>("uidLoginField");
+        if(!loginDialog || !loginDialog->property("visible").toBool() || !loginField || loginField->width()<80 || loginField->height()<20)return 9;
+        qputenv("P2P_MESSENGER_DATA_ROOT",QDir(root.path()).filePath("login-scratch").toUtf8());auto loginController=std::make_unique<MessengerController>();
+        engine.rootContext()->setContextProperty("messenger",loginController.get());
+        if(!loginController->loginAccount("11","test-password") || !QMetaObject::invokeMethod(window,"resetSession"))return 9;
+        if(engine.rootObjects().first()!=window || !loginController->loginPending())return 9;
+        loginController->cancelLogin();QTimer::singleShot(100,&app,&QCoreApplication::quit);app.exec();
+        if(!loginDialog->property("visible").toBool())return 9;
+        engine.rootContext()->setContextProperty("messenger",&controller);QMetaObject::invokeMethod(window,"resetSession");loginController.reset();
+        qputenv("P2P_MESSENGER_DATA_ROOT",root.path().toUtf8());
+        if(warnings || engine.rootObjects().first()!=window)return 9;
+        std::cout<<"UID_LOGIN_FIELDS_VISIBLE_CANCEL_RETRY_PROFILE_SWAP_RETAINS_NATIVE_WINDOW=PASS"<<std::endl;
         const auto screenshotIndex=app.arguments().indexOf("--screenshot-dir");
         if(screenshotIndex>=0) {
             const auto directory=app.arguments().value(screenshotIndex+1); QDir().mkpath(directory);
@@ -525,6 +620,7 @@ int main(int argc, char** argv)
                 QTimer::singleShot(200,&app,&QCoreApplication::quit);app.exec();
                 return quickWindow->grabWindow().save(QDir(directory).filePath(name));
             };
+            controller.selectContact("preview-friend");window->setProperty("showThread",true);
             if(!capture("chat-390.png"))return 9;
             window->setProperty("expandedTools",true);if(!capture("tools-390.png"))return 9;
             window->setProperty("showThread",false);if(!capture("messages-390.png"))return 9;

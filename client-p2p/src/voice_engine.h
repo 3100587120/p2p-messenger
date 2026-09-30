@@ -18,7 +18,9 @@ public:
     bool play(const QByteArray& pcm, bool live = false);
     void stopPlayback();
     bool permissionPending() const { return permissionPending_; }
+    bool playing() const {return output_!=nullptr;}
 signals:
+    void playbackChanged();
     void recordingChanged(bool recording);
     void pcmReady(const QByteArray& pcm);
     void recordingReady(const QByteArray& pcm);

@@ -14,8 +14,10 @@ public:
     void setCallbacks(std::function<void()> suspend,std::function<void()> resume);
     void setActive(bool active);
     static bool foregroundRequested(const QString& root);
+    static bool serviceReady(const QString& root);
 private:
     void lease(bool active);
+    void releaseToService();
     QString root_;
     QLockFile lock_;
     QTimer timer_;

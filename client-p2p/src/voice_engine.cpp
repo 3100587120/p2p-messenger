@@ -124,10 +124,12 @@ bool VoiceEngine::play(const QByteArray& pcm, bool live) {
             stopPlayback(); emit errorOccurred(tr("扬声器启动失败")); return false;
         }
         pump_.start();
+        emit playbackChanged();
     }
     return true;
 }
 void VoiceEngine::stopPlayback() {
     pump_.stop(); playbackDevice_ = nullptr; pendingPlayback_.clear();
     if (output_) { output_->stop(); output_->deleteLater(); output_ = nullptr; }
+    emit playbackChanged();
 }

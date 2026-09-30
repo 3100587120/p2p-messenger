@@ -10,7 +10,10 @@
 BackgroundSession::BackgroundSession(const QString& root):root_(root),lock_(QDir(root).filePath("session-owner.lock")) {
     QDir().mkpath(root); lock_.setStaleLockTime(0); timer_.setInterval(1000);
     connect(&timer_,&QTimer::timeout,this,[this] {
-        if (!active_) return;
+        if (!active_) {
+            if(owned_){if(serviceReady(root_))releaseToService();else lease(true);}
+            return;
+        }
         lease(true);
         if (!owned_ && lock_.tryLock(0)) { owned_=true; if(resume_)resume_(); }
     });
@@ -26,11 +29,21 @@ bool BackgroundSession::foregroundRequested(const QString& root) {
     return value.value("active").toBool() && value.value("until").toInteger()>QDateTime::currentMSecsSinceEpoch();
 }
 bool BackgroundSession::claimInitial() { lease(true); owned_=lock_.tryLock(3000); timer_.start(); return owned_; }
+bool BackgroundSession::serviceReady(const QString& root) {
+    QFile file(QDir(root).filePath("background-status.json"));if(!file.open(QIODevice::ReadOnly))return false;
+    const auto at=QJsonDocument::fromJson(file.readAll()).object().value("at").toInteger();const auto now=QDateTime::currentMSecsSinceEpoch();return at>0 && now>=at && now-at<15000;
+}
+void BackgroundSession::releaseToService() {
+    if(suspend_)suspend_();owned_=false;lock_.unlock();lease(false);
+}
 void BackgroundSession::setCallbacks(std::function<void()> suspend,std::function<void()> resume) { suspend_=std::move(suspend); resume_=std::move(resume); }
 void BackgroundSession::setActive(bool active) {
     active_=active;
-    if(!active && owned_) { if(suspend_)suspend_(); owned_=false; lock_.unlock(); }
-    lease(active);
+    // Never tear down a working foreground connection for a service that has
+    // not actually entered its native event loop. Keep the existing session
+    // alive in background until its replacement reports ready.
+    if(!active && owned_ && serviceReady(root_))releaseToService();
+    else lease(active || owned_);
 }
 #ifdef Q_OS_ANDROID
 #include <QtCore/private/qandroidextras_p.h>
@@ -48,8 +61,14 @@ int runMessageService(int argc,char** argv) {
     QDir().mkpath(base); QLockFile lock(QDir(base).filePath("session-owner.lock")); lock.setStaleLockTime(0);
     std::unique_ptr<MessengerController> controller; QString currentRoot; bool owned=false;
     NotificationService notifications;
+    qint64 lastHeartbeat=0;
     QTimer timer; timer.setInterval(250);
     QObject::connect(&timer,&QTimer::timeout,&app,[&] {
+        const auto now=QDateTime::currentMSecsSinceEpoch();
+        if(now-lastHeartbeat>=1000) {
+            lastHeartbeat=now;QSaveFile status(QDir(base).filePath("background-status.json"));
+            if(status.open(QIODevice::WriteOnly)){status.write(QJsonDocument(QJsonObject{{"at",now},{"ownsSession",owned},{"connected",controller && controller->networkStatus().contains(QStringLiteral("自检通过"))}}).toJson(QJsonDocument::Compact));status.commit();}
+        }
         if(BackgroundSession::foregroundRequested(base)) {
             if(owned){controller.reset();currentRoot.clear();lock.unlock();owned=false;} return;
         }
