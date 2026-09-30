@@ -48,6 +48,15 @@ function Invoke-CMake([string[]]$Arguments) {
     if ($process.ExitCode -ne 0) { throw "CMake failed with exit code $($process.ExitCode)" }
 }
 
+function Copy-RuntimeFile([string]$Source, [string]$DestinationDirectory) {
+    $targetFile = Join-Path $DestinationDirectory (Split-Path $Source -Leaf)
+    # Running acceptance tests can hold runtime DLLs open. Identical files
+    # need no overwrite; a changed, locked runtime still fails visibly.
+    if ((Test-Path -LiteralPath $targetFile) -and
+        (Get-FileHash -LiteralPath $Source).Hash -eq (Get-FileHash -LiteralPath $targetFile).Hash) { return }
+    Copy-Item -LiteralPath $Source -Destination $targetFile -Force
+}
+
 $configureArgs = @(
     '-S', (Join-Path $repoRoot 'client-p2p'),
     '-B', $buildRoot,
@@ -87,15 +96,15 @@ if (-not $SkipDeploy) {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     $ffmpegBin = Join-Path $daemonRoot 'contrib/build/ffmpeg/Build/win32/x64/bin'
     foreach ($name in @('avcodec-58.dll','avdevice-58.dll','avfilter-7.dll','avformat-58.dll','avutil-56.dll','swresample-3.dll','swscale-5.dll')) {
-        Copy-Item -LiteralPath (Join-Path $ffmpegBin $name) -Destination $release -Force
+        Copy-RuntimeFile (Join-Path $ffmpegBin $name) $release
     }
     foreach ($name in @('libcrypto-1_1-x64.dll','libssl-1_1-x64.dll')) {
-        Copy-Item -LiteralPath (Join-Path $daemonRoot "contrib/build/openssl/$name") -Destination $release -Force
+        Copy-RuntimeFile (Join-Path $daemonRoot "contrib/build/openssl/$name") $release
     }
     $crtRoot = 'D:\VSBuildTools\VC\Redist\MSVC\14.44.35112\x64\Microsoft.VC143.CRT'
     foreach ($name in @('concrt140.dll','msvcp140.dll','msvcp140_1.dll','msvcp140_2.dll',
                          'msvcp140_atomic_wait.dll','msvcp140_codecvt_ids.dll',
                          'vcruntime140.dll','vcruntime140_1.dll','vcruntime140_threads.dll')) {
-        Copy-Item -LiteralPath (Join-Path $crtRoot $name) -Destination $release -Force
+        Copy-RuntimeFile (Join-Path $crtRoot $name) $release
     }
 }

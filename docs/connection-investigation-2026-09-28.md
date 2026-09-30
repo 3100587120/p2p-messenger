@@ -112,3 +112,28 @@ workers.dev endpoint and compatibility with any previously unreadable vault
 remain unverified. Do not substitute a same-LAN test for this missing evidence.
 Browser restrictions on the Cloudflare account remain in force; no alternative
 account access has been used to bypass them.
+
+### Passed cross-WAN Android core runs
+
+- **36662122238** (commit 0d41a84): exact ARM64 APK, Android Keystore round-trip,
+  real OpenSSL TLS, Android-originated friend request, Windows acceptance,
+  bidirectional encrypted messages and authenticated outgoing receipt: PASS.
+  Windows isolated receiver reported `CONTROLLER_ACCEPTED=1` and
+  `CONTROLLER_FRIEND_FLOW=PASS`.
+- **36662959012** (commit 02dbd52): Android initially announces itself by sending
+  a real request; Windows then submits a reciprocal request rather than
+  accepting it. The Android controller receives and persists Windows' request,
+  accepts it and exchanges messages. `P2P_ANDROID_INCOMING_REQUEST_ACCEPTED=true`
+  and `P2P_ANDROID_FRIEND_FLOW=PASS`; Windows `RECIPROCAL_ACCEPTED=1` and
+  `CONTROLLER_FRIEND_FLOW=PASS`. Both sides are on separate physical networks.
+- Simultaneous outgoing/incoming requests now upgrade the existing contact row
+  instead of creating two conflicting sessions. A delayed request receipt no
+  longer downgrades an already accepted contact's status.
+- Final APK SHA-256:
+  `72536793EC5DB2682CC921DA732A377200341EEBD40A49AEBA033E665D63437C`.
+
+These are Android **core** acceptance results with the optional direct engine
+disabled, not complete Android GUI or real-device network acceptance. The
+Keystore fix preserves keys and records; it cannot guarantee recovery of keys
+already unreadable under an older build. Do not advise uninstalling/clearing
+data as an automatic repair.
