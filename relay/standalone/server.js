@@ -38,7 +38,7 @@ export function createRelay({ tls, maxConnections = 1000, maxPerIp = 20, directo
   const webSockets = new WebSocketServer({ noServer: true, maxPayload: 65536, perMessageDeflate: false });
   const router = new Router({
     storage: directoryStorage,
-    getWebSockets: (id) => [...(sockets.get(id) ?? [])].filter((socket) => socket.readyState === WebSocket.OPEN),
+    getWebSockets: (id) => [...(id===undefined?webSockets.clients:(sockets.get(id) ?? []))].filter((socket) => socket.readyState === WebSocket.OPEN),
   }, {OWNER_DEVICE_SECRET:ownerSecret});
   server.on("upgrade", (request, socket, head) => {
     let url;
@@ -77,6 +77,7 @@ export function createRelay({ tls, maxConnections = 1000, maxPerIp = 20, directo
         if (count > 0) ipCounts.set(ip, count); else ipCounts.delete(ip);
       });
       client.send(JSON.stringify({ op: "ready", protocol: 1 }));
+      router.notifyOnline(id);
     });
   });
   const heartbeat = setInterval(() => {

@@ -30,6 +30,14 @@ async function connect(base, id) {
   return socket;
 }
 
+test("real offline subscription wakes immediately when the peer opens a connection", async (t) => {
+  const base=await withRelay(t);const alice='a'.repeat(64),bob='b'.repeat(64);
+  const sender=await connect(base,alice);t.after(()=>sender.terminate());
+  sender.send(JSON.stringify({op:'watch',peer:bob}));
+  const wakeup=once(sender,'message');const recipient=await connect(base,bob);t.after(()=>recipient.terminate());
+  const result=JSON.parse((await wakeup)[0]);assert.deepEqual(result,{op:'peer_online',peer:bob});
+});
+
 test("health and invalid handshake", async (t) => {
   const base = await withRelay(t);
   assert.deepEqual(await (await fetch(`${base}/health`)).json(), { service: "shuangdianliao-relay", protocol: 1 });

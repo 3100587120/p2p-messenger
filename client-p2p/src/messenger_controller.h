@@ -49,6 +49,7 @@ class MessengerController final : public QObject
     Q_PROPERTY(QString lastError READ lastError NOTIFY lastErrorChanged)
     Q_PROPERTY(QStringList pendingRequests READ pendingRequests NOTIFY pendingRequestsChanged)
     Q_PROPERTY(QStringList pendingGroupRequests READ pendingGroupRequests NOTIFY pendingGroupRequestsChanged)
+    Q_PROPERTY(QVariantList groupRequests READ groupRequests NOTIFY pendingGroupRequestsChanged)
     Q_PROPERTY(bool assistedConnection READ assistedConnection NOTIFY assistedConnectionChanged)
     Q_PROPERTY(QString relayEndpoint READ relayEndpoint NOTIFY relayEndpointChanged)
     Q_PROPERTY(bool customRelay READ customRelay NOTIFY relayEndpointChanged)
@@ -99,6 +100,8 @@ public:
     Q_INVOKABLE bool removeGroupMember(const QString& memberId);
     Q_INVOKABLE QVariantList searchHistory(const QString& query, bool allChats = false) const;
     Q_INVOKABLE QVariantMap droppedFileDetails(const QString& url) const;
+    Q_INVOKABLE QVariantMap fileDetails(int index) const;
+    Q_INVOKABLE bool previewFile(int index);
     Q_INVOKABLE bool renameGroup(const QString& name);
     Q_INVOKABLE void chooseGroupAvatar();
     Q_INVOKABLE bool setGroupAvatar(const QString& path);
@@ -155,6 +158,7 @@ public:
     QString lastError() const;
     QStringList pendingRequests() const;
     QStringList pendingGroupRequests() const;
+    QVariantList groupRequests() const;
     bool assistedConnection() const;
     QString relayEndpoint() const;
     QString peerProbeStatus() const;
@@ -189,6 +193,7 @@ signals:
     void screenshotChanged();
     void groupAvatarPickerRequested();
     void photoPickerRequested();
+    void filePreviewReady(const QVariantMap& preview);
     void notificationPermissionRequested();
     void incomingNotice(const QString& title, const QString& text);
     void avatarPickerRequested();
@@ -259,6 +264,9 @@ private:
     VoiceEngine voice_;
     QString playingVoiceData_;
     QString screenshotPreview_;
+    quint64 previewGeneration_{0};
+    QHash<QString,QString> deliveryContacts_;
+    bool deliveryIndexReady_{false};
     QTimer callDeadline_;
     QTimer callHeartbeat_;
     QString callPing_;

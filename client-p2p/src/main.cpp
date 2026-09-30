@@ -230,8 +230,10 @@ int main(int argc, char* argv[])
         QObject::connect(messenger.get(), &MessengerController::notificationPermissionRequested, &notifications, &NotificationService::requestPermission);
         QObject::connect(messenger.get(),&MessengerController::uidChanged,&notifications,[&]{if(!messenger->userCode().isEmpty())notifications.accountReady();});
         QObject::connect(messenger.get(),&MessengerController::uidChanged,&accounts,[&]{accounts.completeLogin(messenger->userCode(),messenger->inviteCode());});
-        accounts.updateName(messenger->profileName());
-        QObject::connect(messenger.get(), &MessengerController::profileNameChanged, &accounts, [&] { accounts.updateName(messenger->profileName()); });
+        const auto syncAccount=[&] { accounts.updateDetails(messenger->profileName(),messenger->userCode(),messenger->avatarUrl()); };
+        syncAccount();
+        QObject::connect(messenger.get(), &MessengerController::profileNameChanged, &accounts, syncAccount);
+        QObject::connect(messenger.get(), &MessengerController::uidChanged, &accounts, syncAccount);
 #ifdef Q_OS_ANDROID
         QObject::connect(messenger.get(),&MessengerController::registrationStatusChanged,&engine,[&]{
             if(rebuildingProfile || messenger->loginPending() || messenger->registrationPending() || messenger->callState()=="active")return;

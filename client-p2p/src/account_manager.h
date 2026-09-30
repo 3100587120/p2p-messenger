@@ -13,6 +13,7 @@ public:
     QString baseRoot() const { return base_; }
     static bool resetForPasswordRelease(QString* error);
     void updateName(const QString& name);
+    void updateDetails(const QString& name,const QString& uid,const QString& avatar);
     Q_INVOKABLE bool createAccount();
     Q_INVOKABLE bool beginLogin(const QString& uid, const QString& password);
     QStringList takeLogin();

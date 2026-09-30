@@ -20,6 +20,7 @@ public:
     bool isReady() const;
     bool isConnected() const;
     bool hasPendingPacket(const QString& id) const {return outbox_.contains(id);}
+    bool canSendBulk() const;
     bool registrationDeferred() const { return ownerRegistrationNotice_; }
     bool hasEndpoint() const;
     QString identityId() const;
@@ -66,6 +67,7 @@ private:
         QString to;
         QByteArray envelope;
         QString scope;
+        bool bulk{false};
     };
     LocalVault& vault_;
     RelayCrypto crypto_;
@@ -107,6 +109,9 @@ private:
     QMap<QString, Outgoing> outbox_;
     QMap<QString, QString> liveRecipients_;
     QSet<QString> offlineRecipients_;
+    QSet<QString> watchedRecipients_;
+    QHash<QString,qint64> lastSent_;
+    qint64 liveTrafficUntil_{0};
     QSet<QString> seen_;
     bool currentPacketAccepted_ {true};
 

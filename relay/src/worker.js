@@ -33,7 +33,16 @@ export class Router {
     this.ctx.acceptWebSocket(server, [id]);
     server.serializeAttachment({ id });
     server.send(JSON.stringify({ op: "ready", protocol: 1 }));
+    this.notifyOnline(id);
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  notifyOnline(id) {
+    // Notify only explicit watchers, not every user of the service.
+    for (const socket of this.ctx.getWebSockets()) {
+      if (!socket.deserializeAttachment()?.watches?.includes(id)) continue;
+      try { socket.send(JSON.stringify({op:"peer_online",peer:id})); } catch { /* stale watcher */ }
+    }
   }
 
   webSocketMessage(socket, data) {
@@ -44,6 +53,13 @@ export class Router {
     }
     let frame;
     try { frame = JSON.parse(data); } catch { socket.send(JSON.stringify({ op: "error", reason: "bad_json" })); return; }
+    if (frame?.op === "watch") {
+      if (!identity.test(frame.peer) || frame.peer === sender) return;
+      const attachment=socket.deserializeAttachment();const watches=attachment.watches || [];
+      if(!watches.includes(frame.peer)){if(watches.length>=200)return;watches.push(frame.peer);attachment.watches=watches;socket.serializeAttachment(attachment);}
+      if(this.ctx.getWebSockets(frame.peer).length)socket.send(JSON.stringify({op:"peer_online",peer:frame.peer}));
+      return;
+    }
     if (frame?.op === 'admin_directory' && packetId.test(frame.id) && this.directory) {
       return this.directory.admin(frame.action,frame.timestamp,frame.nonce,frame.mac,frame.repairs)
         .then(value=>socket.send(JSON.stringify({op:'admin_directory_result',id:frame.id,...value})))

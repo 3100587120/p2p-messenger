@@ -28,4 +28,5 @@ private:
     QTimer pump_,exportTimer_;std::unique_ptr<QSaveFile> export_;
     QString exportTransfer_;qint64 exportIndex_{0},exportCount_{0};
     bool saveOutgoing();void pump();
+    bool pumpQueued_{false};
 };

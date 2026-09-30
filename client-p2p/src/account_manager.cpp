@@ -55,6 +55,18 @@ AccountManager::AccountManager(QObject* parent) : QObject(parent) {
         }
     }
     if (activeIndex() < 0) active_ = "default";
+    // Thumbnails remain in the encrypted vault, never duplicated in accounts.ini.
+    // Read each saved profile once, not during QML bindings or every repaint.
+    for(auto& value:profiles_) {
+        auto row=value.toMap();const auto id=row.value("id").toString();
+        const auto root=id=="default"?base_:QDir(base_).filePath("accounts/"+id);
+        if(!QFileInfo::exists(QDir(root).filePath("vault")))continue;
+        LocalVault vault(root);const auto saved=vault.loadConversation("__profile");if(saved.isEmpty())continue;
+        const auto profile=saved.first().toMap();row.insert("uid",profile.value("uid"));
+        const auto name=profile.value("profileName").toString().left(64);if(!name.isEmpty())row.insert("name",name);
+        const auto avatar=profile.value("avatar").toString();if(avatar.size()<=128*1024)row.insert("avatar",avatar.isEmpty()?QString():"data:image/png;base64,"+avatar);
+        value=row;
+    }
 }
 QVariantList AccountManager::profiles() const { return profiles_; }
 int AccountManager::activeIndex() const {
@@ -64,7 +76,8 @@ int AccountManager::activeIndex() const {
 QString AccountManager::activeRoot() const { return active_ == "default" ? base_ : QDir(base_).filePath("accounts/" + active_); }
 bool AccountManager::persist() {
     QSettings s(QDir(base_).filePath("accounts.ini"),QSettings::IniFormat);
-    s.setValue("profiles",profiles_); s.setValue("active",active_); s.sync();
+    auto publicRows=profiles_;for(auto& value:publicRows){auto row=value.toMap();row.remove("avatar");value=row;}
+    s.setValue("profiles",publicRows); s.setValue("active",active_); s.sync();
     if (s.status() != QSettings::NoError) { emit errorOccurred(tr("账号列表未能保存，请检查本机存储权限和空间")); return false; }
     return true;
 }
@@ -73,6 +86,12 @@ void AccountManager::updateName(const QString& name) {
     auto row = profiles_[i].toMap(); if (row.value("name") == name) return;
     const auto previous = profiles_[i]; row.insert("name",name.left(64)); profiles_[i] = row;
     if (!persist()) { profiles_[i] = previous; return; } emit profilesChanged();
+}
+void AccountManager::updateDetails(const QString& name,const QString& uid,const QString& avatar) {
+    const auto i=activeIndex();if(i<0)return;auto row=profiles_[i].toMap();const auto previous=row;
+    if(!name.isEmpty())row.insert("name",name.left(64));row.insert("uid",uid);row.insert("avatar",avatar);
+    if(row==previous)return;profiles_[i]=row;
+    if(!persist()){profiles_[i]=previous;return;}emit profilesChanged();
 }
 void AccountManager::selectAccount(int index) {
     if (index<0 || index>=profiles_.size()) return;

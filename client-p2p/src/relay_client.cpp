@@ -58,13 +58,13 @@ RelayClient::RelayClient(LocalVault& vault, QObject* parent)
         const auto to = row.value(QStringLiteral("to")).toString();
         const auto envelope = row.value(QStringLiteral("envelope")).toByteArray();
         if (!id.isEmpty() && to.size() == 64 && !envelope.isEmpty())
-            outbox_.insert(id, {to, envelope,row.value("scope").toString()});
+            outbox_.insert(id, {to, envelope,row.value("scope").toString(),row.value("bulk").toBool()});
     }
     for (const auto& item : vault_.loadConversation(QString::fromLatin1(seenSlot)))
         seen_.insert(item.toString());
     reconnect_.setInterval(5000);
     connect(&reconnect_, &QTimer::timeout, this, &RelayClient::connectNow);
-    retryOutbox_.setInterval(3000);
+    retryOutbox_.setInterval(500);
     heartbeat_.setInterval(15000);
     pongDeadline_.setSingleShot(true);
     pongDeadline_.setInterval(10000);
@@ -102,6 +102,7 @@ RelayClient::RelayClient(LocalVault& vault, QObject* parent)
         heartbeat_.start();
         connected_ = true;
         offlineRecipients_.clear();
+        watchedRecipients_.clear();lastSent_.clear();
         failureNotice_.stop();
         pendingError_.clear();
         failureReported_ = false;
@@ -339,6 +340,8 @@ QString RelayClient::send(const QByteArray& recipientPublicKey, const QJsonObjec
 
 bool RelayClient::sendLive(const QByteArray& key, const QJsonObject& message)
 {
+    // Keep bulk disk/network work out of the real-time audio path.
+    liveTrafficUntil_=QDateTime::currentMSecsSinceEpoch()+300;
     if (!connected_ || socket_.bytesToWrite() > 128000) return false;
     const auto to = idForPublicKey(key);
     const auto id = QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -350,16 +353,22 @@ bool RelayClient::sendLive(const QByteArray& key, const QJsonObject& message)
     return true;
 }
 
+bool RelayClient::canSendBulk() const {
+    return connected_ && QDateTime::currentMSecsSinceEpoch()>=liveTrafficUntil_ && socket_.bytesToWrite()<32768 && outbox_.size()<128;
+}
+
 QStringList RelayClient::sendBatch(const QByteArray& recipientPublicKey, const QList<QJsonObject>& messages)
 {
     const auto to = idForPublicKey(recipientPublicKey);
     if (to.isEmpty() || !isReady() || messages.isEmpty() || messages.size() > 200) return {};
     QMap<QString, Outgoing> prepared;
+    QStringList ids;
     for (const auto& message : messages) {
         const auto id = QUuid::createUuid().toString(QUuid::WithoutBraces);
         const auto envelope = crypto_.seal(recipientPublicKey, id, message);
         if (envelope.isEmpty() || envelope.size() > 56000) return {};
-        prepared.insert(id, {to, envelope,message.value("groupId").toString()});
+        prepared.insert(id, {to, envelope,message.value("groupId").toString(),message.value("type")=="stream_chunk" || message.value("type")=="file_chunk"});
+        ids.append(id);
     }
     for (auto it = prepared.cbegin(); it != prepared.cend(); ++it)
         outbox_.insert(it.key(), it.value());
@@ -368,11 +377,10 @@ QStringList RelayClient::sendBatch(const QByteArray& recipientPublicKey, const Q
         emit errorOccurred(tr("发送队列无法保存到本机"));
         return {};
     }
-    QStringList ids;
-    for (auto it = prepared.cbegin(); it != prepared.cend(); ++it) {
-        ids.append(it.key());
-        sendFrame(it.key(), it.value());
-        emit deliveryState(it.key(), QStringLiteral("queued"));
+    // Preserve caller order, especially file chunk indices. UUID map order is random.
+    for (const auto& id:ids) {
+        sendFrame(id, prepared.value(id));
+        emit deliveryState(id, QStringLiteral("queued"));
     }
     return ids;
 }
@@ -385,6 +393,7 @@ void RelayClient::rejectCurrentPacket()
 void RelayClient::sendFrame(const QString& id, const Outgoing& outgoing)
 {
     if (!connected_) return;
+    if(outbox_.contains(id))lastSent_.insert(id,QDateTime::currentMSecsSinceEpoch());
     socket_.sendTextMessage(QString::fromUtf8(QJsonDocument(QJsonObject {
         {QStringLiteral("op"), QStringLiteral("send")},
         {QStringLiteral("id"), id},
@@ -397,12 +406,21 @@ void RelayClient::resendOutbox()
 {
     if (!connected_) return;
     QSet<QString> retriedOfflineRecipients;
-    for (auto it = outbox_.cbegin(); it != outbox_.cend(); ++it) {
+    const auto now=QDateTime::currentMSecsSinceEpoch();
+    // A reconnect must not put queued text and invitations behind a large file.
+    for (const bool bulk : {false,true}) {
+      if(bulk && now<liveTrafficUntil_)return;
+      for (auto it = outbox_.cbegin(); it != outbox_.cend(); ++it) {
+        if(it.value().bulk!=bulk)continue;
+        if(socket_.bytesToWrite()>(bulk?32768:128000))return;
+        const auto retryDelay=offlineRecipients_.contains(it.value().to)?1500:it.value().bulk?10000:3000;
+        if(lastSent_.contains(it.key()) && now-lastSent_.value(it.key())<retryDelay)continue;
         if (offlineRecipients_.contains(it.value().to)) {
             if (retriedOfflineRecipients.contains(it.value().to)) continue;
             retriedOfflineRecipients.insert(it.value().to);
         }
         sendFrame(it.key(), it.value());
+      }
     }
 }
 
@@ -428,6 +446,12 @@ void RelayClient::onFrame(const QString& text)
     const auto frame = document.object();
     const auto op = frame.value(QStringLiteral("op")).toString();
     const auto directoryId = frame.value(QStringLiteral("id")).toString();
+    if(op=="peer_online") {
+        const auto peer=frame.value("peer").toString();if(!watchedRecipients_.contains(peer))return;
+        offlineRecipients_.remove(peer);
+        for(auto it=outbox_.cbegin();it!=outbox_.cend();++it)if(it.value().to==peer)lastSent_.remove(it.key());
+        resendOutbox();return;
+    }
     if(op=="friend_repair_result" && !friendRepairQuery_.isEmpty() && directoryId==friendRepairQuery_){
         friendRepairQuery_.clear();const auto repair=frame.value("repair").toObject();if(repair.isEmpty())return;
         if(repair.value("envelope").toString().size()>8000)return;
@@ -530,7 +554,13 @@ void RelayClient::onFrame(const QString& text)
         if (!outbox_.contains(id) || (status != QStringLiteral("recipient_offline") &&
                                     status != QStringLiteral("forwarded"))) return;
         const auto recipient = outbox_.value(id).to;
-        if (status == QStringLiteral("recipient_offline")) offlineRecipients_.insert(recipient);
+        if (status == QStringLiteral("recipient_offline")) {
+            offlineRecipients_.insert(recipient);
+            if(!watchedRecipients_.contains(recipient) && watchedRecipients_.size()<200){
+                watchedRecipients_.insert(recipient);
+                socket_.sendTextMessage(QString::fromUtf8(QJsonDocument(QJsonObject{{"op","watch"},{"peer",recipient}}).toJson(QJsonDocument::Compact)));
+            }
+        }
         else offlineRecipients_.remove(recipient);
         emit deliveryState(id, status);
         return;
@@ -554,6 +584,7 @@ void RelayClient::onFrame(const QString& text)
         const auto original = message.value(QStringLiteral("id")).toString();
         if (outbox_.contains(original) && outbox_.value(original).to == from) {
             outbox_.remove(original);
+            lastSent_.remove(original);
             persistOutbox();
             emit deliveryState(original, QStringLiteral("delivered"));
         }
@@ -580,6 +611,7 @@ bool RelayClient::persistOutbox()
         rows.append(QVariantMap {{QStringLiteral("id"), it.key()},
                                  {QStringLiteral("to"), it.value().to},
                                  {QStringLiteral("scope"), it.value().scope},
+                                 {QStringLiteral("bulk"), it.value().bulk},
                                  {QStringLiteral("envelope"), it.value().envelope}});
     return vault_.saveConversation(QString::fromLatin1(outboxSlot), rows);
 }

@@ -16,11 +16,13 @@ FileStream::FileStream(LocalVault& vault,RelayClient& relay,QObject* parent):QOb
     const auto rows=vault_.loadConversation("__stream_outgoing");if(!rows.isEmpty())outgoing_=rows.first().toMap();
     for(auto& value:outgoing_){auto row=value.toMap();auto pending=row.value("pending").toStringList();for(qsizetype i=pending.size();i>0;--i)if(!relay_.hasPendingPacket(pending[i-1]))pending.removeAt(i-1);row.insert("pending",pending);value=row;}
     if(!outgoing_.isEmpty())saveOutgoing();
-    pump_.setInterval(30);connect(&pump_,&QTimer::timeout,this,&FileStream::pump);pump_.start();
+    pump_.setInterval(30);connect(&pump_,&QTimer::timeout,this,&FileStream::pump);if(!outgoing_.isEmpty())pump_.start();
     connect(&relay_,&RelayClient::deliveryState,this,[this](const QString& packet,const QString& state){
         if(state!="delivered")return;
         for(auto it=outgoing_.begin();it!=outgoing_.end();++it){auto row=it.value().toMap();auto pending=row.value("pending").toStringList();if(!pending.removeAll(packet))continue;
-            row.insert("pending",pending);it.value()=row;saveOutgoing();return;}
+            row.insert("pending",pending);it.value()=row;
+            if(!saveOutgoing()){pump_.stop();emit error(tr("文件进度无法保存，请检查本机空间"));return;}
+            if(!pumpQueued_){pumpQueued_=true;QTimer::singleShot(0,this,[this]{pumpQueued_=false;pump();});}return;}
     });
     exportTimer_.setInterval(0);connect(&exportTimer_,&QTimer::timeout,this,[this]{
         const auto rows=vault_.loadConversation(slot(exportTransfer_,exportIndex_));const auto bytes=rows.isEmpty()?QByteArray():QByteArray::fromBase64(rows.first().toByteArray());
@@ -36,18 +38,27 @@ bool FileStream::sendFile(const QString& path,const QString& contact,const QStri
         outgoing_.insert(id+target,QVariantMap{{"id",id},{"path",info.absoluteFilePath()},{"modified",info.lastModified().toMSecsSinceEpoch()},{"size",info.size()},{"name",info.fileName().left(180)},{"contact",contact},{"group",group},{"code","SD1-"+QString::fromLatin1(key.toBase64(QByteArray::Base64UrlEncoding|QByteArray::OmitTrailingEquals))},{"next",0},{"pending",QStringList()}});
     }
     if(!saveOutgoing()){outgoing_=previous;return false;}
-    emit fileReady(contact,QVariantMap{{"body",tr("文件：%1（分块传输中）").arg(info.fileName())},{"name",info.fileName()},{"fileId",id},{"messageId",id},{"sentAt",QDateTime::currentMSecsSinceEpoch()},{"filePath",info.absoluteFilePath()},{"outgoing",true},{"kind","file-offer"},{"time",QDateTime::currentDateTime().toString("HH:mm")}});return true;
+    pump_.start();
+    emit fileReady(contact,QVariantMap{{"body",tr("文件：%1（分块传输中）").arg(info.fileName())},{"name",info.fileName()},{"size",info.size()},{"fileId",id},{"messageId",id},{"sentAt",QDateTime::currentMSecsSinceEpoch()},{"filePath",info.absoluteFilePath()},{"outgoing",true},{"kind","file-offer"},{"time",QDateTime::currentDateTime().toString("HH:mm")}});return true;
 }
 void FileStream::pump(){
-    if(!relay_.isConnected())return;
+    if(outgoing_.isEmpty()){pump_.stop();return;}
+    if(!relay_.canSendBulk())return;
     for(auto it=outgoing_.begin();it!=outgoing_.end();){auto row=it.value().toMap();auto pending=row.value("pending").toStringList();const auto size=row.value("size").toLongLong(),count=qMax<qint64>(1,(size+chunkBytes-1)/chunkBytes),index=row.value("next").toLongLong();
-        if(index>=count && pending.isEmpty()){it=outgoing_.erase(it);saveOutgoing();continue;}if(pending.size()>=4 || index>=count){++it;continue;}
+        if(index>=count && pending.isEmpty()){it=outgoing_.erase(it);saveOutgoing();continue;}if(pending.size()>=8 || index>=count){++it;continue;}
         QFile input(row.value("path").toString());const QFileInfo info(input);
         if(!input.open(QIODevice::ReadOnly) || input.size()!=size || info.lastModified().toMSecsSinceEpoch()!=row.value("modified").toLongLong() || !input.seek(index*chunkBytes)){
             emit error(tr("待发送文件已改变或无法读取，已停止该传输"));it=outgoing_.erase(it);saveOutgoing();continue;}
-        const auto bytes=input.read(chunkBytes);const auto expected=qMin(chunkBytes,size-index*chunkBytes);if(bytes.size()!=expected){emit error(tr("文件读取不完整"));it=outgoing_.erase(it);saveOutgoing();continue;}
-        const auto packet=relay_.send(RelayClient::publicKeyFromCode(row.value("code").toString()),QJsonObject{{"type","stream_chunk"},{"fileId",row.value("id").toString()},{"name",row.value("name").toString()},{"groupId",row.value("group").toString()},{"size",size},{"count",count},{"index",index},{"data",QString::fromLatin1(bytes.toBase64())}});
-        if(packet.isEmpty())return;pending.append(packet);row.insert("pending",pending);row.insert("next",index+1);it.value()=row;if(!saveOutgoing()){pump_.stop();emit error(tr("文件进度无法保存，请检查本机空间"));return;}++it;
+        const auto window=qMin<qint64>(8-pending.size(),count-index);QList<QJsonObject> batch;bool readFailed=false;
+        for(qint64 part=index;part<index+window;++part){
+            const auto bytes=input.read(chunkBytes);if(bytes.size()!=qMin(chunkBytes,size-part*chunkBytes)){readFailed=true;break;}
+            batch.append(QJsonObject{{"type","stream_chunk"},{"fileId",row.value("id").toString()},{"name",row.value("name").toString()},{"groupId",row.value("group").toString()},{"size",size},{"count",count},{"index",part},{"data",QString::fromLatin1(bytes.toBase64())}});
+        }
+        if(readFailed){emit error(tr("文件读取不完整"));it=outgoing_.erase(it);saveOutgoing();continue;}
+        const auto packets=relay_.sendBatch(RelayClient::publicKeyFromCode(row.value("code").toString()),batch);
+        if(packets.size()!=batch.size())return;pending.append(packets);row.insert("pending",pending);row.insert("next",index+window);it.value()=row;if(!saveOutgoing()){pump_.stop();emit error(tr("文件进度无法保存，请检查本机空间"));return;}++it;
+        // Let live audio and newly composed text run before another file fills the socket.
+        if(!relay_.canSendBulk())return;
     }
 }
 bool FileStream::receive(const QString& sender,const QString& contact,const QJsonObject& msg){
@@ -60,7 +71,7 @@ bool FileStream::receive(const QString& sender,const QString& contact,const QJso
     if(row.value("cancelled").toBool())return true;
     if(!row.isEmpty() && (row.value("size").toLongLong()!=size || row.value("count").toLongLong()!=count || row.value("name").toString()!=QFileInfo(msg.value("name").toString()).fileName()))return false;
     if(row.value("done").toBool()){
-        emit fileReady(contact,QVariantMap{{"body",tr("文件：%1（可保存）").arg(row.value("name").toString())},{"name",row.value("name")},{"fileId",id},{"messageId",id},{"streamTransfer",transfer},{"senderId",sender},{"outgoing",false},{"kind","file-offer"},{"time",QDateTime::currentDateTime().toString("HH:mm")}});return true;
+        emit fileReady(contact,QVariantMap{{"body",tr("文件：%1（可保存）").arg(row.value("name").toString())},{"name",row.value("name")},{"size",size},{"fileId",id},{"messageId",id},{"streamTransfer",transfer},{"senderId",sender},{"outgoing",false},{"kind","file-offer"},{"time",QDateTime::currentDateTime().toString("HH:mm")}});return true;
     }
     if(index<row.value("next",0).toLongLong())return true;
     auto holes=row.value("holes").toList();const auto next=row.value("next",0).toLongLong();if(index>next+16)return false;
@@ -72,7 +83,7 @@ bool FileStream::receive(const QString& sender,const QString& contact,const QJso
     if(!holes.contains(index))holes.append(index);auto contiguous=next;while(holes.removeAll(contiguous))++contiguous;
     row.insert("next",contiguous);row.insert("holes",holes);row.insert("done",contiguous==count);
     if(!vault_.saveConversation(transfer,{row}))return false;
-    if(contiguous==count)emit fileReady(contact,QVariantMap{{"body",tr("文件：%1（可保存）").arg(row.value("name").toString())},{"name",row.value("name")},{"fileId",id},{"messageId",id},{"streamTransfer",transfer},{"senderId",sender},{"outgoing",false},{"kind","file-offer"},{"time",QDateTime::currentDateTime().toString("HH:mm")}});
+    if(contiguous==count)emit fileReady(contact,QVariantMap{{"body",tr("文件：%1（可保存）").arg(row.value("name").toString())},{"name",row.value("name")},{"size",size},{"fileId",id},{"messageId",id},{"streamTransfer",transfer},{"senderId",sender},{"outgoing",false},{"kind","file-offer"},{"time",QDateTime::currentDateTime().toString("HH:mm")}});
     return true;
 }
 bool FileStream::exportFile(const QString& transfer,const QString& path){

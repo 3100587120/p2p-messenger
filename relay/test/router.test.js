@@ -52,3 +52,21 @@ test("admin wire protocol passes operation-bound proof without nesting", async (
   await state.router.webSocketMessage(state.sender,JSON.stringify({op:"admin_directory",id,action:"backup",timestamp:123,nonce:"nonce",mac:"proof"}));
   assert.deepEqual(state.received,[{op:"admin_directory_result",id,accounts:0,records:{}}]);
 });
+
+test("online wakeup is only sent to explicit watchers and closes subscribe race", () => {
+  let attachment={id:alice};const frames=[],otherFrames=[];
+  const socket={deserializeAttachment:()=>structuredClone(attachment),serializeAttachment:value=>{attachment=structuredClone(value)},send:text=>frames.push(JSON.parse(text))};
+  const other={deserializeAttachment:()=>({id:'c'.repeat(64)}),send:text=>otherFrames.push(JSON.parse(text))};
+  let online=false;
+  const router=new Router({getWebSockets:id=>id===undefined?[socket,other]:id===bob && online?[other]:[]});
+  router.webSocketMessage(socket,JSON.stringify({op:'watch',peer:bob}));assert.equal(frames.length,0);
+  online=true;router.notifyOnline(bob);assert.deepEqual(frames,[{op:'peer_online',peer:bob}]);assert.equal(otherFrames.length,0);
+  router.webSocketMessage(socket,JSON.stringify({op:'watch',peer:bob}));assert.equal(frames.length,2);assert.deepEqual(attachment.watches,[bob]);
+});
+
+test("watch identities are validated and subscriptions are bounded", () => {
+  let attachment={id:alice};const socket={deserializeAttachment:()=>structuredClone(attachment),serializeAttachment:value=>{attachment=structuredClone(value)},send:()=>{}};
+  const router=new Router({getWebSockets:()=>[]});
+  for(const peer of [alice,'wrong',null])router.webSocketMessage(socket,JSON.stringify({op:'watch',peer}));assert.equal(attachment.watches,undefined);
+  for(let i=1;i<=230;i++)router.webSocketMessage(socket,JSON.stringify({op:'watch',peer:i.toString(16).padStart(64,'0')}));assert.equal(attachment.watches.length,200);
+});
