@@ -42,3 +42,13 @@ test("malformed packets are rejected", () => {
   assert.equal(state.peerFrames.length, 0);
   assert.equal(state.received[0].reason, "bad_packet");
 });
+
+test("admin wire protocol passes operation-bound proof without nesting", async () => {
+  const state=setup(), id="01234567-89ab-cdef";
+  state.router.directory={admin:async(action,timestamp,nonce,mac)=>{
+    assert.equal(action,"backup");assert.equal(timestamp,123);assert.equal(nonce,"nonce");assert.equal(mac,"proof");
+    return {accounts:0,records:{}};
+  }};
+  await state.router.webSocketMessage(state.sender,JSON.stringify({op:"admin_directory",id,action:"backup",timestamp:123,nonce:"nonce",mac:"proof"}));
+  assert.deepEqual(state.received,[{op:"admin_directory_result",id,accounts:0,records:{}}]);
+});

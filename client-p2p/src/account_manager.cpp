@@ -4,6 +4,39 @@
 #include <QDir>
 #include <QUuid>
 #include <QRegularExpression>
+#include <QFile>
+#include <QFileInfo>
+#include "local_vault.h"
+bool AccountManager::resetForPasswordRelease(QString* error) {
+    const auto base = qEnvironmentVariable("P2P_MESSENGER_DATA_ROOT").isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) : qEnvironmentVariable("P2P_MESSENGER_DATA_ROOT");
+    QSettings marker(QDir(base).filePath("account-reset.ini"),QSettings::IniFormat);
+    const auto version = QStringLiteral("2026-09-30-password-accounts-1");
+    if (marker.value("completed").toString()==version) return true;
+    if (!QDir().mkpath(base)) { if(error)*error=QStringLiteral("无法创建本机账号目录"); return false; }
+    QVariantList owner;
+    if (QFileInfo::exists(QDir(base).filePath("vault"))) { LocalVault old(base); if (!old.isReady()) { if(error)*error=old.error(); return false; } owner=old.loadConversation("__owner_device"); }
+    const auto backup = QDir(base).filePath("account-backups/"+version+"-"+QUuid::createUuid().toString(QUuid::WithoutBraces));
+    if (!QDir().mkpath(backup)) { if(error)*error=QStringLiteral("无法创建账号备份目录，未清空账号"); return false; }
+    QStringList moved;
+    const auto rollback = [&] {
+        const auto fresh=QDir(base).filePath("vault");
+        if (moved.contains("vault") && QFileInfo::exists(fresh)) QDir().rename(fresh,QDir(backup).filePath("failed-new-vault"));
+        for (const auto& name : moved) QDir().rename(QDir(backup).filePath(name),QDir(base).filePath(name));
+    };
+    for (const auto& name : {QStringLiteral("vault"),QStringLiteral("accounts"),QStringLiteral("accounts.ini")}) {
+        const auto source=QDir(base).filePath(name); if (!QFileInfo::exists(source)) continue;
+        if (QFileInfo(source).isSymLink() || !QDir().rename(source,QDir(backup).filePath(name))) { rollback(); if(error)*error=QStringLiteral("账号备份未完成，已停止重置；原资料保留"); return false; }
+        moved.append(name);
+    }
+    if (!owner.isEmpty()) {
+        LocalVault fresh(base);
+        auto row=owner.first().toMap(); row.insert("enabled",true);
+        if (!fresh.saveConversation("__owner_device",{row})) { rollback(); if(error)*error=QStringLiteral("主人资格恢复失败，未完成重置"); return false; }
+    }
+    marker.setValue("completed",version); marker.setValue("backup",backup); marker.sync();
+    if (marker.status()!=QSettings::NoError) { rollback(); if(error)*error=QStringLiteral("重置标记无法保存，已保留原账号"); return false; }
+    return true;
+}
 AccountManager::AccountManager(QObject* parent) : QObject(parent) {
     base_ = qEnvironmentVariable("P2P_MESSENGER_DATA_ROOT");
     if (base_.isEmpty()) base_ = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
@@ -47,11 +80,22 @@ void AccountManager::selectAccount(int index) {
     if (!persist()) { active_ = previous; return; }
     emit profilesChanged(); emit accountSelected(activeRoot());
 }
-void AccountManager::createAccount() {
-    if (profiles_.size() >= 50) { emit errorOccurred(tr("本机账号数量已达 50 个")); return; }
+bool AccountManager::createAccount() {
+    if (profiles_.size() >= 50) { emit errorOccurred(tr("本机账号数量已达 50 个")); return false; }
     const auto previous = profiles_; const auto previousActive = active_;
     active_ = QUuid::createUuid().toString(QUuid::WithoutBraces);
     profiles_.append(QVariantMap {{"id",active_},{"name",tr("新账号")}});
-    if (!persist()) { profiles_ = previous; active_ = previousActive; return; }
+    if (!persist()) { profiles_ = previous; active_ = previousActive; return false; }
     emit profilesChanged(); emit accountSelected(activeRoot());
+    return true;
+}
+bool AccountManager::beginLogin(const QString& uid,const QString& password) {
+    if (!QRegularExpression("^[1-9][0-9]{0,15}$").match(uid.trimmed()).hasMatch() || password.size()<8 || password.size()>128) { emit errorOccurred(tr("请输入数字 UID 和 8–128 位密码")); return false; }
+    loginUid_=uid.trimmed(); loginPassword_=password;
+    if (!createAccount()) { loginUid_.clear(); loginPassword_.fill(QChar('\0')); loginPassword_.clear(); return false; }
+    return true;
+}
+QStringList AccountManager::takeLogin() {
+    if (loginUid_.isEmpty()) return {};
+    const QStringList result {loginUid_,loginPassword_}; loginUid_.clear(); loginPassword_.fill(QChar('\0')); loginPassword_.clear(); return result;
 }

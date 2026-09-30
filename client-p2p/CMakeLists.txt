@@ -29,6 +29,8 @@ qt_standard_project_setup(REQUIRES 6.5)
 qt_add_executable(P2PMessenger
     src/account_manager.cpp src/account_manager.h
     src/main.cpp
+    src/photo_picker.cpp src/photo_picker.h
+    src/notification_service.cpp src/notification_service.h
     src/android_acceptance.cpp src/android_acceptance.h
     src/messenger_controller.cpp
     src/messenger_controller.h
@@ -53,9 +55,13 @@ qt_add_qml_module(P2PMessenger
     VERSION 1.0
     QML_FILES
         qml/Main.qml
+        qml/FeatureIcon.qml
 )
 
 target_link_libraries(P2PMessenger PRIVATE Qt6::Quick Qt6::QuickControls2 Qt6::Network Qt6::WebSockets Qt6::Multimedia)
+if(WIN32)
+    target_link_libraries(P2PMessenger PRIVATE shell32 user32)
+endif()
 
 if(NOT WIN32 AND NOT ANDROID)
     target_link_libraries(P2PMessenger PRIVATE OpenSSL::Crypto)

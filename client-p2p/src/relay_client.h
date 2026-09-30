@@ -18,6 +18,7 @@ public:
     explicit RelayClient(LocalVault& vault, QObject* parent = nullptr);
     bool isReady() const;
     bool isConnected() const;
+    bool registrationDeferred() const { return ownerRegistrationNotice_; }
     bool hasEndpoint() const;
     QString identityId() const;
     QString inviteCode() const;
@@ -30,13 +31,20 @@ public:
     bool sendLive(const QByteArray& recipientPublicKey, const QJsonObject& message);
     void enableDirectory(bool enabled);
     bool lookupUid(const QString& uid);
+    bool registerPasswordAccount(const QString& password, const QString& name);
+    bool loginPasswordAccount(const QString& uid, const QString& password);
+    bool passwordConfigured() const { return passwordConfigured_; }
+    bool registrationPending() const { return !registrationAuth_.isEmpty(); }
     QStringList sendBatch(const QByteArray& recipientPublicKey, const QList<QJsonObject>& messages);
     void rejectCurrentPacket();
 
 signals:
     void connectedChanged(bool connected);
     void uidAssigned(const QString& uid);
-    void uidResolved(const QString& uid, const QString& code);
+    void registrationDeferredChanged();
+    void peerUnavailable(const QString& identity);
+    void passwordAccountRestored(const QString& uid, const QString& name);
+    void uidResolved(const QString& uid, const QString& code, const QString& name);
     void packetReceived(const QString& senderId, const QByteArray& senderPublicKey,
                         const QJsonObject& message);
     void deliveryState(const QString& packetId, const QString& state);
@@ -63,10 +71,15 @@ private:
     bool connected_ {false};
     bool directoryEnabled_ {false};
     bool ownerRegistrationNotice_ {false};
+    bool passwordConfigured_ {false};
+    QJsonObject registrationAuth_;
+    QString loginUid_, loginPassword_, loginRequest_;
+    bool loginRequested_ {false};
     QString directoryRegistration_;
     QMap<QString, QString> directoryQueries_;
     QTimer directoryDeadline_;
     QMap<QString, Outgoing> outbox_;
+    QMap<QString, QString> liveRecipients_;
     QSet<QString> offlineRecipients_;
     QSet<QString> seen_;
     bool currentPacketAccepted_ {true};

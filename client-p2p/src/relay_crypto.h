@@ -14,6 +14,9 @@ public:
     bool loadOrCreate(LocalVault& vault);
     QString identityId() const;
     QString inviteCode() const;
+    QJsonObject makeLoginRecord(const QString& password, const QString& name) const;
+    static QString loginToken(const QString& password, const QString& salt, int iterations);
+    bool restoreLoginRecord(LocalVault& vault, const QString& password, const QJsonObject& record);
     static QByteArray publicKeyFromCode(const QString& code);
     static QString idForPublicKey(const QByteArray& key);
 

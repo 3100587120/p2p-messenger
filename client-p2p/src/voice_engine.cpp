@@ -6,6 +6,8 @@
 #include <QMediaDevices>
 #include <QCoreApplication>
 #include <QPermissions>
+#include <QPointer>
+#include <QGuiApplication>
 
 namespace {
 QAudioFormat pcmFormat() {
@@ -34,8 +36,14 @@ void VoiceEngine::capture(bool live) {
     QMicrophonePermission permission;
     const auto status = qApp->checkPermission(permission);
     if (status == Qt::PermissionStatus::Undetermined) {
+        permissionPending_ = true;
         qApp->requestPermission(permission, this, [this, live, generation](const QPermission&) {
-            if (generation == captureGeneration_) capture(live);
+            permissionPending_ = false;
+            QTimer::singleShot(250,this,[this,live,generation] {
+                if (generation != captureGeneration_) return;
+                if (QGuiApplication::applicationState()!=Qt::ApplicationActive) { emit errorOccurred(tr("麦克风授权完成，请返回应用后重试")); return; }
+                capture(live);
+            });
         });
         return;
     }
@@ -51,10 +59,13 @@ void VoiceEngine::capture(bool live) {
     if (!source || input_->error() != QtAudio::NoError) {
         stopCapture(false); emit errorOccurred(tr("麦克风启动失败，请检查设备和权限")); return;
     }
-    connect(input_, &QAudioSource::stateChanged, this, [this](QtAudio::State state) {
-        if (input_ && state == QtAudio::StoppedState && input_->error() != QtAudio::NoError) {
-            stopCapture(false); emit errorOccurred(tr("录音设备发生错误，录音已停止"));
-        }
+    const QPointer<QAudioSource> input(input_);
+    connect(input_, &QAudioSource::stateChanged, this, [this,input](QtAudio::State state) {
+        if (state == QtAudio::StoppedState) QTimer::singleShot(0,this,[this,input] {
+            if (input && input_==input && input_->error()!=QtAudio::NoError) {
+                stopCapture(false); emit errorOccurred(tr("录音设备发生错误，录音已停止"));
+            }
+        });
     });
     connect(source, &QIODevice::readyRead, this, [this, source] {
         const auto bytes = source->readAll();
@@ -75,6 +86,7 @@ void VoiceEngine::capture(bool live) {
 }
 void VoiceEngine::stopCapture(bool keepRecording) {
     ++captureGeneration_;
+    permissionPending_ = false;
     recordDeadline_.stop();
     if (input_) { auto* old = input_; input_ = nullptr; old->disconnect(this); old->stop(); old->deleteLater(); }
     frame_.clear();
@@ -85,6 +97,8 @@ void VoiceEngine::stopCapture(bool keepRecording) {
 bool VoiceEngine::play(const QByteArray& pcm, bool live) {
     if (pcm.isEmpty() || pcm.size() % 2 || pcm.size() > 1920000) return false;
     if (!live) stopPlayback();
+    pendingPlayback_ += pcm;
+    if (live && pendingPlayback_.size() > 32000) pendingPlayback_ = pendingPlayback_.last(32000);
     if (!output_) {
         playbackLive_ = live;
         const auto device = QMediaDevices::defaultAudioOutput();
@@ -92,8 +106,16 @@ bool VoiceEngine::play(const QByteArray& pcm, bool live) {
             emit errorOccurred(tr("没有可用的扬声器，或设备不支持语音播放格式")); return false;
         }
         output_ = new QAudioSink(device, pcmFormat(), this);
-        connect(output_, &QAudioSink::stateChanged, this, [this](QtAudio::State state) {
-            if (output_ && state == QtAudio::IdleState && pendingPlayback_.isEmpty() && !playbackLive_) stopPlayback();
+        const QPointer<QAudioSink> sink(output_);
+        connect(output_, &QAudioSink::stateChanged, this, [this,sink](QtAudio::State state) {
+            // Never tear down a backend synchronously inside start()/write().
+            if (state == QtAudio::IdleState || state == QtAudio::StoppedState)
+                QTimer::singleShot(0,this,[this,sink,state] {
+                    if (!sink || output_ != sink) return;
+                    if (state == QtAudio::StoppedState && output_->error() != QtAudio::NoError) {
+                        stopPlayback(); emit errorOccurred(tr("播放设备发生错误，语音已停止"));
+                    } else if (state == QtAudio::IdleState && pendingPlayback_.isEmpty() && !playbackLive_) stopPlayback();
+                });
         });
         output_->setBufferSize(6400); playbackDevice_ = output_->start();
         if (!playbackDevice_ || output_->error() != QtAudio::NoError) {
@@ -101,8 +123,6 @@ bool VoiceEngine::play(const QByteArray& pcm, bool live) {
         }
         pump_.start();
     }
-    pendingPlayback_ += pcm;
-    if (live && pendingPlayback_.size() > 32000) pendingPlayback_ = pendingPlayback_.last(32000);
     return true;
 }
 void VoiceEngine::stopPlayback() {

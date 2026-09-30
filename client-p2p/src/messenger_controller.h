@@ -28,6 +28,9 @@ class MessengerController final : public QObject
     Q_PROPERTY(QString profileName READ profileName NOTIFY profileNameChanged)
     Q_PROPERTY(QString avatarUrl READ avatarUrl NOTIFY profileNameChanged)
     Q_PROPERTY(QString userCode READ userCode NOTIFY uidChanged)
+    Q_PROPERTY(QString registrationStatus READ registrationStatus NOTIFY registrationStatusChanged)
+    Q_PROPERTY(bool passwordConfigured READ passwordConfigured NOTIFY uidChanged)
+    Q_PROPERTY(bool registrationPending READ registrationPending NOTIFY registrationStatusChanged)
     Q_PROPERTY(QVariantList friendRequests READ friendRequests NOTIFY pendingRequestsChanged)
     Q_PROPERTY(QString directEndpoint READ directEndpoint NOTIFY directEndpointChanged)
     Q_PROPERTY(QString pairingCode READ pairingCode NOTIFY pairingCodeChanged)
@@ -59,8 +62,16 @@ public:
     QString profileName() const;
     QString avatarUrl() const;
     QString userCode() const;
+    QString registrationStatus() const;
+    bool passwordConfigured() const { return relay_.passwordConfigured(); }
+    bool registrationPending() const { return relay_.registrationPending(); }
+    Q_INVOKABLE bool registerAccount(const QString& name, const QString& password);
+    Q_INVOKABLE bool loginAccount(const QString& uid, const QString& password);
     QVariantList friendRequests() const;
     Q_INVOKABLE bool setAvatar(const QString& path);
+    Q_INVOKABLE void chooseAvatar();
+    Q_INVOKABLE void chooseAttachment(bool sticker);
+    Q_INVOKABLE void enableMessageReminders() { emit notificationPermissionRequested(); }
     Q_INVOKABLE bool setGroupNickname(const QString& name);
     Q_INVOKABLE bool addFriendByUid(const QString& uid, const QString& remark);
     Q_INVOKABLE void copyUid();
@@ -115,6 +126,11 @@ public:
     Q_INVOKABLE bool testPeerConnection(const QString& invite);
 
 signals:
+    void notificationPermissionRequested();
+    void incomingNotice(const QString& title, const QString& text);
+    void avatarPickerRequested();
+    void attachmentPickerRequested(bool sticker);
+    void registrationStatusChanged();
     void uidChanged();
     void voiceChanged();
     void stickersChanged();
@@ -174,6 +190,8 @@ private:
     RelayClient relay_;
     VoiceEngine voice_;
     QTimer callDeadline_;
+    QTimer callHeartbeat_;
+    QString callPing_;
     bool recording_ {false};
     QString recordingContact_, callState_ {QStringLiteral("idle")}, callPeerName_, callId_, callPeerId_;
     QByteArray callKey_;

@@ -26,12 +26,16 @@ RelayClient::RelayClient(LocalVault& vault, QObject* parent)
     : QObject(parent), vault_(vault)
 {
     crypto_.loadOrCreate(vault_);
+    const auto pendingAccount = vault_.loadConversation("__account_registration");
+    if (!pendingAccount.isEmpty()) registrationAuth_ = QJsonObject::fromVariantMap(pendingAccount.first().toMap());
+    passwordConfigured_ = !vault_.loadConversation("__password_account").isEmpty();
     directoryDeadline_.setSingleShot(true);
-    directoryDeadline_.setInterval(12000);
+    directoryDeadline_.setInterval(30000);
     connect(&directoryDeadline_, &QTimer::timeout, this, [this] {
-        if (!directoryRegistration_.isEmpty() || !directoryQueries_.isEmpty())
+        if (!directoryRegistration_.isEmpty() || !directoryQueries_.isEmpty() || loginRequested_)
             emit errorOccurred(tr("账号目录未响应：中继可能尚未升级或无法访问，UID 注册/查找未完成"));
         directoryRegistration_.clear(); directoryQueries_.clear();
+        loginRequest_.clear(); loginPassword_.fill(QChar('\0')); loginPassword_.clear(); loginRequested_ = false;
     });
     // Old builds left zero-length metadata files. Recover only those queues;
     // the identity and nonempty unreadable ciphertext must never be reset.
@@ -93,9 +97,15 @@ RelayClient::RelayClient(LocalVault& vault, QObject* parent)
         failureReported_ = false;
         emit connectedChanged(true);
         enableDirectory(directoryEnabled_);
+        if (loginRequested_) {
+            loginRequest_ = QUuid::createUuid().toString(QUuid::WithoutBraces);
+            socket_.sendTextMessage(QString::fromUtf8(QJsonDocument(QJsonObject {{"op","login_info"},{"id",loginRequest_},{"uid",loginUid_}}).toJson(QJsonDocument::Compact)));
+            directoryDeadline_.start();
+        }
         resendOutbox();
     });
     connect(&socket_, &QWebSocket::disconnected, this, [this] {
+        liveRecipients_.clear();
         heartbeat_.stop();
         pongDeadline_.stop();
         connectDeadline_.stop();
@@ -125,22 +135,24 @@ void RelayClient::enableDirectory(bool enabled)
 {
     directoryEnabled_ = enabled;
     if (!enabled || !connected_) return;
+    if (registrationAuth_.isEmpty()) return; // No numeric registration without a chosen password.
     directoryRegistration_ = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    QJsonObject registration {{"op", "register"}, {"id", directoryRegistration_}, {"code", inviteCode()}};
+    QJsonObject registration {{"op", "register"}, {"id", directoryRegistration_}, {"code", inviteCode()},{"auth",registrationAuth_}};
 #ifdef Q_OS_WIN
     // Only provisioned on the owner's PC, never included in an installation package.
     // Do not read real credentials from isolated acceptance test profiles.
-    if (qEnvironmentVariable("P2P_MESSENGER_DATA_ROOT").isEmpty() || qEnvironmentVariableIsSet("P2P_MESSENGER_ACCOUNT_PROFILE")) {
-        LocalVault device(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation));
+    const auto ownerRoot=qEnvironmentVariable("P2P_MESSENGER_OWNER_DEVICE_ROOT");
+    if (qEnvironmentVariable("P2P_MESSENGER_DATA_ROOT").isEmpty() || !ownerRoot.isEmpty()) {
+        LocalVault device(ownerRoot.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) : ownerRoot);
         const auto rows = device.loadConversation("__owner_device");
         if (!rows.isEmpty()) {
             const auto secret = QByteArray::fromBase64(rows.first().toMap().value("secret").toString().toLatin1());
-            if (secret.size() == 32) {
+            if (secret.size() == 32 && endpoint_.host() == QStringLiteral("shuangdianliao-relay.plastic-gojirasaurus.workers.dev")) {
                 if (!rows.first().toMap().value("enabled",false).toBool()) {
                     directoryRegistration_.clear();
                     if (!ownerRegistrationNotice_) {
                         ownerRegistrationNotice_ = true;
-                        emit errorOccurred(tr("这台电脑的预留 UID 注册按你的要求暂缓；1–10 尚未绑定。暂时可使用完整配对码加好友。"));
+                        emit registrationDeferredChanged();
                     }
                     return;
                 }
@@ -154,6 +166,26 @@ void RelayClient::enableDirectory(bool enabled)
 #endif
     socket_.sendTextMessage(QString::fromUtf8(QJsonDocument(registration).toJson(QJsonDocument::Compact)));
     directoryDeadline_.start();
+}
+bool RelayClient::registerPasswordAccount(const QString& password, const QString& name) {
+    if (passwordConfigured_ || !registrationAuth_.isEmpty()) {
+        emit errorOccurred(tr("此本机账号已设置密码或正在注册，请勿重复创建")); return false;
+    }
+    const auto record = crypto_.makeLoginRecord(password,name);
+    if (record.isEmpty() || !vault_.saveConversation("__account_registration",{record.toVariantMap()})) {
+        emit errorOccurred(tr("密码设置或加密身份备份失败（密码须 8–128 个字符）")); return false;
+    }
+    registrationAuth_ = record; enableDirectory(true); return true;
+}
+bool RelayClient::loginPasswordAccount(const QString& uid, const QString& password) {
+    if (loginRequested_ || passwordConfigured_ || !registrationAuth_.isEmpty() || password.size()<8 || password.size()>128 ||
+        !QRegularExpression("^[1-9][0-9]{0,15}$").match(uid).hasMatch()) return false;
+    loginUid_=uid; loginPassword_=password; loginRequested_=true;
+    if (connected_) {
+        loginRequest_=QUuid::createUuid().toString(QUuid::WithoutBraces);
+        socket_.sendTextMessage(QString::fromUtf8(QJsonDocument(QJsonObject {{"op","login_info"},{"id",loginRequest_},{"uid",uid}}).toJson(QJsonDocument::Compact)));
+    }
+    directoryDeadline_.start(); return true;
 }
 bool RelayClient::lookupUid(const QString& uid)
 {
@@ -262,6 +294,8 @@ bool RelayClient::sendLive(const QByteArray& key, const QJsonObject& message)
     const auto id = QUuid::createUuid().toString(QUuid::WithoutBraces);
     const auto envelope = crypto_.seal(key, id, message);
     if (to.isEmpty() || envelope.isEmpty() || envelope.size() > 56000) return false;
+    if (liveRecipients_.size() >= 256) liveRecipients_.erase(liveRecipients_.begin());
+    liveRecipients_.insert(id,to);
     sendFrame(id, {to, envelope});
     return true;
 }
@@ -343,25 +377,51 @@ void RelayClient::onFrame(const QString& text)
     const auto frame = document.object();
     const auto op = frame.value(QStringLiteral("op")).toString();
     const auto directoryId = frame.value(QStringLiteral("id")).toString();
+    if (op == "login_info_result" && !loginRequest_.isEmpty() && directoryId == loginRequest_ && frame.value("uid").toString() == loginUid_) {
+        const auto token=RelayCrypto::loginToken(loginPassword_,frame.value("salt").toString(),frame.value("iterations").toInt());
+        if (token.isEmpty()) { loginRequested_=false; loginRequest_.clear(); loginPassword_.fill(QChar('\0')); loginPassword_.clear(); directoryDeadline_.stop(); emit errorOccurred(tr("登录参数无效或密码格式错误")); return; }
+        socket_.sendTextMessage(QString::fromUtf8(QJsonDocument(QJsonObject {{"op","login"},{"id",loginRequest_},{"uid",loginUid_},{"token",token}}).toJson(QJsonDocument::Compact))); return;
+    }
+    if (op == "login_result" && !loginRequest_.isEmpty() && directoryId == loginRequest_) {
+        const auto uid=frame.value("uid").toString();
+        const bool restored=uid==loginUid_ && crypto_.restoreLoginRecord(vault_,loginPassword_,frame);
+        loginPassword_.fill(QChar('\0')); loginPassword_.clear(); loginRequested_=false; loginRequest_.clear(); directoryDeadline_.stop();
+        if (!restored) { emit errorOccurred(tr("账号或密码错误，身份恢复未完成，原有数据未覆盖")); return; }
+        // Only fresh login profiles reach here. Old scratch probes must not be resent under the recovered identity.
+        outbox_.clear(); seen_.clear(); persistOutbox(); persistSeen();
+        passwordConfigured_=vault_.saveConversation("__password_account",{QVariantMap {{"uid",uid}}});
+        if (!passwordConfigured_) { emit errorOccurred(tr("身份已解密，但登录状态无法保存，请检查本机空间后重试")); refreshConnection(); return; }
+        emit passwordAccountRestored(uid,frame.value("name").toString().left(64));
+        refreshConnection(); return;
+    }
     if (op == "registered" && !directoryRegistration_.isEmpty() && directoryId == directoryRegistration_) {
         const auto uid = frame.value("uid").toString();
         if (!QRegularExpression(QStringLiteral("^[1-9][0-9]{0,15}$")).match(uid).hasMatch()) return;
-        directoryRegistration_.clear(); emit uidAssigned(uid);
+        passwordConfigured_=vault_.saveConversation("__password_account",{QVariantMap {{"uid",uid}}});
+        if (!passwordConfigured_ || !vault_.saveConversation("__account_registration",{})) { emit errorOccurred(tr("UID 已注册，但本机登录状态未能保存；重试不会占用新 UID")); return; }
+        registrationAuth_={}; directoryRegistration_.clear(); emit uidAssigned(uid);
         if (directoryQueries_.isEmpty()) directoryDeadline_.stop(); return;
     }
     if (op == "lookup_result" && directoryQueries_.contains(directoryId)) {
         const auto uid = directoryQueries_.take(directoryId);
         if (frame.value("uid").toString() != uid) return;
-        emit uidResolved(uid, frame.value("code").toString());
+        emit uidResolved(uid, frame.value("code").toString(), frame.value("name").toString().left(64));
         if (directoryRegistration_.isEmpty() && directoryQueries_.isEmpty()) directoryDeadline_.stop(); return;
     }
-    if (op == "directory_error" && (directoryId == directoryRegistration_ || directoryQueries_.contains(directoryId))) {
+    if (op == "directory_error" && (directoryId == directoryRegistration_ || directoryQueries_.contains(directoryId) || directoryId == loginRequest_)) {
+        const bool loginFailed = !loginRequest_.isEmpty() && directoryId == loginRequest_;
+        loginPassword_.fill(QChar('\0')); loginPassword_.clear(); loginRequested_=false; loginRequest_.clear();
         directoryRegistration_.clear(); directoryQueries_.clear(); directoryDeadline_.stop();
-        emit errorOccurred(tr("UID 服务暂不可用：%1").arg(frame.value("reason").toString())); return;
+        emit errorOccurred(loginFailed ? tr("账号或密码错误，或登录尝试过多，请稍后重试") : tr("UID 注册/查询未完成：%1").arg(frame.value("reason").toString())); return;
     }
     if (op == QStringLiteral("relay")) {
         const auto id = frame.value(QStringLiteral("id")).toString();
         const auto status = frame.value(QStringLiteral("status")).toString();
+        if (liveRecipients_.contains(id)) {
+            const auto peer = liveRecipients_.take(id);
+            if (status == "recipient_offline") emit peerUnavailable(peer);
+            return;
+        }
         // Routing metadata is not an authenticated device receipt. In
         // particular, a relay must never be able to assert "delivered".
         if (!outbox_.contains(id) || (status != QStringLiteral("recipient_offline") &&

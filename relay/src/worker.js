@@ -44,7 +44,12 @@ export class Router {
     }
     let frame;
     try { frame = JSON.parse(data); } catch { socket.send(JSON.stringify({ op: "error", reason: "bad_json" })); return; }
-    if (frame?.op === 'register' || frame?.op === 'lookup') {
+    if (frame?.op === 'admin_directory' && packetId.test(frame.id) && this.directory) {
+      return this.directory.admin(frame.action,frame.timestamp,frame.nonce,frame.mac)
+        .then(value=>socket.send(JSON.stringify({op:'admin_directory_result',id:frame.id,...value})))
+        .catch(()=>socket.send(JSON.stringify({op:'admin_directory_denied',id:frame.id})));
+    }
+    if (['register','lookup','login_info','login'].includes(frame?.op)) {
       if (!packetId.test(frame.id)) return;
       if (!this.directory) { socket.send(JSON.stringify({ op: 'directory_error', id: frame.id, reason: 'directory_unavailable' })); return; }
       const attachment = socket.deserializeAttachment();
@@ -53,11 +58,18 @@ export class Router {
       attachment.directoryCount = (attachment.directoryCount || 0) + 1;
       socket.serializeAttachment(attachment);
       if (attachment.directoryCount > 30) { socket.send(JSON.stringify({ op: 'directory_error', id: frame.id, reason: 'rate_limited' })); return; }
-      const action = frame.op === 'register' ? this.directory.register(sender, frame.code, frame.ownerProof)
+      if (frame.op === 'register' && !frame.auth) { socket.send(JSON.stringify({op:'directory_error',id:frame.id,reason:'password_required'})); return; }
+      const action = frame.op === 'register' ? this.directory.register(sender, frame.code, frame.ownerProof, frame.auth)
+        : frame.op === 'login_info' ? this.directory.loginInfo(frame.uid)
+        : frame.op === 'login' ? this.directory.login(frame.uid,frame.token)
         : this.directory.lookup(frame.uid);
-      return action.then(value => socket.send(JSON.stringify(frame.op === 'register'
-        ? { op: 'registered', id: frame.id, uid: value }
-        : { op: 'lookup_result', id: frame.id, uid: frame.uid, code: value || '' })))
+      return action.then(async value => {
+        if (value?.error) { socket.send(JSON.stringify({op:'directory_error',id:frame.id,reason:value.error})); return; }
+        socket.send(JSON.stringify(frame.op === 'register' ? {op:'registered',id:frame.id,uid:value}
+          : frame.op === 'login_info' ? {op:'login_info_result',id:frame.id,uid:frame.uid,...value}
+          : frame.op === 'login' ? {op:'login_result',id:frame.id,...value}
+          : {op:'lookup_result',id:frame.id,uid:frame.uid,code:value || '',name:await this.directory.profile(frame.uid)}));
+      })
         .catch(() => socket.send(JSON.stringify({ op: 'directory_error', id: frame.id, reason: 'directory_failed' })));
     }
     if (frame?.op !== "send" || !identity.test(frame.to) || !packetId.test(frame.id) ||

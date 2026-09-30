@@ -16,6 +16,8 @@
 #include <QBuffer>
 #include <QUuid>
 #include <QDateTime>
+#include <QRandomGenerator>
+#include <memory>
 #include "account_manager.h"
 
 static QString vaultFile(const QString& root, const QString& slot)
@@ -156,7 +158,8 @@ static int friendPersistenceRegression(const QString& root)
     if (!deliveredStatus.contains(QStringLiteral("对方已收到")) ||
         controller.contacts().first().toMap().value("status").toString() != deliveredStatus) return 8;
 
-    int pendingChanges = 0, contactChanges = 0;
+    int pendingChanges = 0, contactChanges = 0, notices = 0;
+    QObject::connect(&controller,&MessengerController::incomingNotice,&controller,[&](const QString&,const QString&){ ++notices; });
     QObject::connect(&controller, &MessengerController::pendingRequestsChanged,
                      &controller, [&] { ++pendingChanges; });
     QObject::connect(&controller, &MessengerController::contactsChanged,
@@ -165,7 +168,7 @@ static int friendPersistenceRegression(const QString& root)
     lock.setStaleLockTime(0);
     if (!lock.tryLock(0)) return 8;
     relay->packetReceived(peerId, peerKey, QJsonObject {{"type", "friend_request"}});
-    if (!controller.pendingRequests().isEmpty() || pendingChanges != 0 ||
+    if (!controller.pendingRequests().isEmpty() || pendingChanges != 0 || notices != 0 ||
         !controller.lastError().contains(QStringLiteral("原因")) ||
         !vault.loadConversation("__profile").first().toMap().value("pendingRelayRequests").toMap().isEmpty()) return 8;
     relay->packetReceived(peerId, peerKey, QJsonObject {
@@ -175,7 +178,7 @@ static int friendPersistenceRegression(const QString& root)
         !vault.loadConversation("__profile").first().toMap().value("pendingRelayGroups").toMap().isEmpty()) return 8;
     lock.unlock();
     relay->packetReceived(peerId, peerKey, QJsonObject {{"type", "friend_request"}});
-    if (controller.pendingRequests() != QStringList {peerId} || pendingChanges != 1 ||
+    if (controller.pendingRequests() != QStringList {peerId} || pendingChanges != 1 || notices != 1 ||
         !vault.loadConversation("__profile").first().toMap().value("pendingRelayRequests").toMap().contains(peerId)) return 8;
 
     const auto beforeContacts = controller.contacts();
@@ -190,8 +193,36 @@ static int friendPersistenceRegression(const QString& root)
     relay->packetReceived(peerId, peerKey, QJsonObject {{"type", "friend_accept"}});
     if (!controller.contacts().first().toMap().value("ready").toBool() || contactChanges != 1 ||
         !vault.loadConversation("__profile").first().toMap().value("contacts").toList().first().toMap().value("ready").toBool()) return 8;
+    controller.selectContact("pending-friend");
+    QLockFile messageLock(vaultFile(root,"pending-friend")+".lock"); messageLock.setStaleLockTime(0);
+    if (!messageLock.tryLock(0)) return 8;
+    relay->packetReceived(peerId,peerKey,QJsonObject {{"type","text"},{"body","persisted incoming message"}});
+    if (notices!=1 || !controller.messages().isEmpty()) return 8;
+    messageLock.unlock();
+    relay->packetReceived(peerId,peerKey,QJsonObject {{"type","text"},{"body","persisted incoming message"}});
+    if (notices!=2 || controller.messages().size()!=1 || vault.loadConversation("pending-friend").size()!=1) return 8;
+    std::cout << "INCOMING_MESSAGE_AND_FRIEND_NOTICE_ONLY_AFTER_SUCCESSFUL_SAVE=PASS" << std::endl;
     std::cout << "FRIEND_PERSISTENCE_FAILURE_AND_DELIVERY_STATUS=PASS" << std::endl;
     return 0;
+}
+
+static int resetRegression(const QString& root) {
+    LocalVault old(root); RelayCrypto original; if (!original.loadOrCreate(old)) return 15;
+    const auto code=original.inviteCode();
+    if (!old.saveConversation("__owner_device",{QVariantMap {{"secret","isolated-test-secret"},{"enabled",false}}}) ||
+        !old.saveConversation("__profile",{QVariantMap {{"profileName","Old account"}}})) return 15;
+    AccountManager before; if (!before.createAccount()) return 15;
+    QString error; if (!AccountManager::resetForPasswordRelease(&error)) { std::cerr<<error.toStdString(); return 15; }
+    const QDir backups(QDir(root).filePath("account-backups"));
+    const auto paths=backups.entryList(QDir::Dirs|QDir::NoDotAndDotDot); if (paths.size()!=1) return 15;
+    LocalVault saved(backups.filePath(paths.first())); RelayCrypto preserved;
+    if (!preserved.loadOrCreate(saved) || preserved.inviteCode()!=code || saved.loadConversation("__profile").isEmpty()) return 15;
+    LocalVault fresh(root); RelayCrypto next;
+    if (fresh.hasConversation("__profile") || !fresh.loadConversation("__owner_device").first().toMap().value("enabled").toBool() ||
+        !next.loadOrCreate(fresh) || next.inviteCode()==code) return 15;
+    AccountManager after; if (after.profiles().size()!=1 || !AccountManager::resetForPasswordRelease(&error)) return 15;
+    RelayCrypto unchanged; if (!unchanged.loadOrCreate(fresh) || unchanged.inviteCode()!=next.inviteCode()) return 15;
+    std::cout << "ACCOUNT_RESET_BACKUP_OWNER_PRESERVATION_AND_IDEMPOTENCE=PASS" << std::endl; return 0;
 }
 
 static int featureRegression(const QString& root) {
@@ -210,6 +241,11 @@ static int featureRegression(const QString& root) {
         QImage image(64,64,QImage::Format_ARGB32); image.fill(Qt::blue);
         const auto file = QDir(root).filePath("avatar.png"); if (!image.save(file) || !c.setAvatar(file)) return 10;
         avatar = c.avatarUrl(); if (!avatar.startsWith("data:image/png;base64,")) return 10;
+        QImage noise(128,128,QImage::Format_ARGB32);
+        for (int y=0;y<128;y++) for (int x=0;x<128;x++) noise.setPixel(x,y,QRandomGenerator::global()->generate());
+        const auto noisy = QDir(root).filePath("noisy-avatar.png");
+        if (!noise.save(noisy) || !c.setAvatar(noisy) || c.avatarUrl().mid(22).size()>32768) return 10;
+        avatar = c.avatarUrl();
         if (!c.sendSticker(file)) return 10;
         auto* relay = c.findChild<RelayClient*>(); if (!relay) return 10;
         relay->packetReceived(peerId,peerKey,QJsonObject {{"type","group_text"},{"groupId","group-test"},{"body","hello"},{"nickname","对方群昵称"}});
@@ -221,7 +257,7 @@ static int featureRegression(const QString& root) {
         const auto callId = QUuid::createUuid().toString(QUuid::WithoutBraces);
         relay->packetReceived(peerId,peerKey,QJsonObject {{"type","call_offer"},{"callId",callId},{"expires",QDateTime::currentSecsSinceEpoch()+30}});
         if (c.callState() != "ringing" || c.recording()) return 10; // Never answer/start a microphone in automated tests.
-        relay->packetReceived(peerId,peerKey,QJsonObject {{"type","call_end"},{"callId",callId}});
+        relay->peerUnavailable(peerId);
         if (c.callState() != "idle") return 10;
     }
     MessengerController reopened;
@@ -248,7 +284,7 @@ static int cloudUidRegression(QGuiApplication& app, const QString& root)
     MessengerController bob;
     bool requested = false, accepted = false, aliceSent = false, bobSent = false;
     bool aliceReceived = false, bobReceived = false;
-    if (!alice.setProfileName("Disposable Alice QA") || !bob.setProfileName("Disposable Bob QA")) return 11;
+    if (!alice.registerAccount("Disposable Alice QA","temporary-qa-password-alice") || !bob.registerAccount("Disposable Bob QA","temporary-qa-password-bob")) return 11;
     QObject::connect(&bob, &MessengerController::pendingRequestsChanged, &app, [&] {
         if (accepted || bob.pendingRequests().isEmpty()) return;
         QTimer::singleShot(0, &app, [&] {
@@ -299,6 +335,43 @@ static int cloudUidRegression(QGuiApplication& app, const QString& root)
     return pass ? 0 : 11;
 }
 
+static int cloudLoginRegression(QGuiApplication& app,const QString& root) {
+    qunsetenv("P2P_MESSENGER_OWNER_DEVICE_ROOT");
+    qputenv("P2P_MESSENGER_DATA_ROOT",QDir(root).filePath("register").toUtf8());
+    const auto ownerFile=qEnvironmentVariable("P2P_MESSENGER_QA_OWNER_KEY_FILE");
+    if (!ownerFile.isEmpty()) {
+        QFile key(ownerFile); if (!key.open(QIODevice::ReadOnly)) return 16;
+        const auto secret=QByteArray::fromBase64(key.readAll().trimmed()); if (secret.size()!=32) return 16;
+        LocalVault owner; if (!owner.saveConversation("__owner_device",{QVariantMap {{"secret",QString::fromLatin1(secret.toBase64())},{"enabled",true}}})) return 16;
+        qputenv("P2P_MESSENGER_OWNER_DEVICE_ROOT",qgetenv("P2P_MESSENGER_DATA_ROOT"));
+    }
+    auto controller=std::make_unique<MessengerController>();
+    const QString password="cloud-disposable-password-qa";
+    QString uid, code; int stage=0; bool pass=false;
+    if (!controller->registerAccount("Login QA",password)) return 16;
+    QTimer deadline; deadline.setSingleShot(true); QObject::connect(&deadline,&QTimer::timeout,&app,&QCoreApplication::quit); deadline.start(60000);
+    QTimer tick; QObject::connect(&tick,&QTimer::timeout,&app,[&] {
+        if (stage==0 && !controller->userCode().isEmpty()) {
+            uid=controller->userCode(); code=controller->inviteCode();
+            if (!ownerFile.isEmpty() && uid.toInt()>10) { app.quit(); return; }
+            controller.reset(); qunsetenv("P2P_MESSENGER_OWNER_DEVICE_ROOT");
+            qputenv("P2P_MESSENGER_DATA_ROOT",QDir(root).filePath("wrong-password").toUtf8());
+            controller=std::make_unique<MessengerController>();
+            if (!controller->loginAccount(uid,"incorrect-password-qa")) { app.quit(); return; } stage=1;
+        } else if (stage==1 && controller->lastError().contains(QStringLiteral("账号或密码错误"))) {
+            if (!controller->userCode().isEmpty() || controller->inviteCode()==code) { app.quit(); return; }
+            controller.reset(); qputenv("P2P_MESSENGER_DATA_ROOT",QDir(root).filePath("correct-password").toUtf8());
+            controller=std::make_unique<MessengerController>();
+            if (!controller->loginAccount(uid,password)) { app.quit(); return; } stage=2;
+        } else if (stage==2 && controller->userCode()==uid && controller->networkStatus().contains(QStringLiteral("自检通过"))) {
+            pass=controller->inviteCode()==code && controller->profileName()=="Login QA" && controller->passwordConfigured(); app.quit();
+        }
+    }); tick.start(200); app.exec();
+    std::cout<<"PUBLIC_WSS_PASSWORD_LOGIN_ORIGINAL_IDENTITY_WRONG_PASSWORD_REJECTED="<<(pass?"PASS":"FAIL")<<" uid="<<uid.toStdString()<<std::endl;
+    if (!pass) std::cerr<<controller->lastError().toStdString()<<std::endl;
+    return pass?0:16;
+}
+
 int main(int argc, char** argv)
 {
     qputenv("QT_QPA_PLATFORM", "offscreen");
@@ -306,6 +379,8 @@ int main(int argc, char** argv)
     QTemporaryDir root(QDir::tempPath() + "/friend-flow-XXXXXX");
     if (!root.isValid()) return 2;
     qputenv("P2P_MESSENGER_DATA_ROOT", root.path().toUtf8());
+    if (app.arguments().contains("--reset-regression")) return resetRegression(root.path());
+    if (app.arguments().contains("--cloud-login-e2e")) return cloudLoginRegression(app,root.path());
     if (app.arguments().contains("--cloud-uid-e2e")) return cloudUidRegression(app, root.path());
     if (app.arguments().contains("--feature-regression")) return featureRegression(root.path());
     if (app.arguments().contains("--qml-smoke")) {

@@ -17,6 +17,7 @@ public:
     void stopCapture(bool keepRecording);
     bool play(const QByteArray& pcm, bool live = false);
     void stopPlayback();
+    bool permissionPending() const { return permissionPending_; }
 signals:
     void recordingChanged(bool recording);
     void pcmReady(const QByteArray& pcm);
@@ -30,5 +31,6 @@ private:
     QTimer pump_, recordDeadline_;
     bool live_ {false};
     bool playbackLive_ {false};
+    bool permissionPending_ {false};
     quint64 captureGeneration_ {0};
 };

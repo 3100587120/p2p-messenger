@@ -50,6 +50,21 @@ int main(int argc, char** argv)
                          .first().toMap().value(QStringLiteral("private")).toString().size() << '\n';
         return 11;
     }
+    const QString password = QStringLiteral("disposable-password-test-only");
+    const auto login = alice.makeLoginRecord(password, "Alice QA");
+    if (login.isEmpty() || login.contains("password") ||
+        RelayCrypto::loginToken(password,login.value("salt").toString(),600000) != login.value("token").toString()) return 14;
+    LocalVault loginVault(QDir(root.path()).filePath("login"));
+    RelayCrypto recovered;
+    if (!recovered.loadOrCreate(loginVault)) return 14;
+    const auto scratchCode = recovered.inviteCode();
+    if (recovered.restoreLoginRecord(loginVault,"wrong-password-test",login) || recovered.inviteCode()!=scratchCode) return 14;
+    auto tampered = login; tampered.insert("code",bob.inviteCode());
+    if (recovered.restoreLoginRecord(loginVault,password,tampered) || recovered.inviteCode()!=scratchCode) return 14;
+    if (!recovered.restoreLoginRecord(loginVault,password,login) || recovered.inviteCode()!=alice.inviteCode()) return 14;
+    const auto recoveredPlain = recovered.open(bob.identityId(),id,bob.seal(alicePublic,id,QJsonObject {{"body","after login"}}),&ok);
+    if (!ok || recoveredPlain.value("body")!="after login") return 14;
+    std::cout << "password login restores original identity; wrong password/substituted identity rejected=PASS\n";
     const auto aliceRoot = QDir(root.path()).filePath(QStringLiteral("alice"));
     const auto profilePath = QDir(aliceRoot).filePath("vault/" + QString::fromLatin1(
         QCryptographicHash::hash("__profile", QCryptographicHash::Sha256).toHex()) + ".p2pvault");

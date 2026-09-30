@@ -16,10 +16,25 @@ ApplicationWindow {
     property color accent: "#1685ef"
     property color subdued: "#758398"
     property string accountError: ""
+    Popup {
+        id: notice; x: (window.width - width) / 2; y: 12; width: Math.min(380,window.width - 24); padding: 14
+        property string heading: ""; property string message: ""
+        background: Rectangle { color: "#e7f3ff"; border.color: "#1685ef"; radius: 12 }
+        contentItem: ColumnLayout { Label { text: notice.heading; font.bold: true; Layout.fillWidth: true; elide: Text.ElideRight } Label { text: notice.message; wrapMode: Text.Wrap; Layout.fillWidth: true } }
+        onOpened: noticeTimeout.restart()
+    }
+    Timer { id: noticeTimeout; interval: 5000; onTriggered: notice.close() }
     component Action: Button {
-        implicitHeight: 38; leftPadding: 10; rightPadding: 10
+        id: actionButton
+        property string iconName: ""
+        implicitHeight: 38; leftPadding: 8; rightPadding: 8
         background: Rectangle { color: parent.down ? "#d8eafe" : "#edf5ff"; radius: 9 }
-        contentItem: Text { text: parent.text; color: parent.enabled ? window.accent : "#9ca9bb"; font.pixelSize: 14; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight }
+        Accessible.name: text
+        contentItem: RowLayout {
+            spacing: actionButton.iconName.length ? 5 : 0
+            FeatureIcon { glyph: actionButton.iconName; tint: actionButton.enabled ? window.accent : "#9ca9bb"; visible: glyph.length > 0; Layout.preferredWidth: 18; Layout.preferredHeight: 18 }
+            Text { text: actionButton.text; color: actionButton.enabled ? window.accent : "#9ca9bb"; font.pixelSize: 14; Layout.fillWidth: true; Layout.minimumWidth: 0; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight }
+        }
     }
     component Sheet: Dialog {
         modal: true; anchors.centerIn: parent
@@ -32,6 +47,10 @@ ApplicationWindow {
         function onLastErrorChanged() { if (messenger.lastError.length) { window.accountError = ""; failure.open() } }
         function onPendingRequestsChanged() { if (messenger.pendingRequests.length) requests.open() }
         function onVoiceChanged() { if (messenger.callState !== "idle") call.open(); else call.close() }
+        function onAvatarPickerRequested() { avatarPicker.open() }
+        function onAttachmentPickerRequested(sticker) { if (sticker) stickerPicker.open(); else filePicker.open() }
+        function onIncomingNotice(title, text) { notice.heading = title; notice.message = text; notice.open() }
+        function onUidChanged() { if (messenger.userCode.length) { account.close(); notice.heading = "账号已就绪"; notice.message = "UID：" + messenger.userCode; notice.open() } }
     }
     Connections { target: typeof accountManager !== "undefined" ? accountManager : null; function onErrorOccurred(message) { window.accountError = message; failure.open() } }
     Sheet { id: failure; title: "操作未完成"; standardButtons: Dialog.Ok; contentItem: Label { text: window.accountError.length ? window.accountError : messenger.lastError; wrapMode: Text.Wrap; color: "#b73545" } }
@@ -45,12 +64,13 @@ ApplicationWindow {
             ColumnLayout {
             id: accountForm; width: accountScroll.availableWidth; spacing: 12
             Image { source: messenger.avatarUrl; Layout.preferredWidth: 72; Layout.preferredHeight: 72; fillMode: Image.PreserveAspectFit; visible: source.toString().length > 0 }
-            Action { text: "上传头像"; onClicked: avatarPicker.open(); Layout.fillWidth: true }
+            Action { iconName: "avatar"; text: "上传头像"; onClicked: messenger.chooseAvatar(); Layout.fillWidth: true }
             TextField { id: accountName; text: messenger.profileName; placeholderText: "给自己起个昵称"; maximumLength: 64; Layout.fillWidth: true; Layout.minimumWidth: 0 }
-            Label { text: messenger.userCode.length ? "UID：" + messenger.userCode : "UID 等待联网注册"; wrapMode: Text.Wrap; Layout.fillWidth: true }
-            Label { text: "无需手机号或邮箱。身份密钥和记录保存在本机，请勿清除应用数据。"; color: window.subdued; wrapMode: Text.Wrap; Layout.fillWidth: true }
-            Action { text: messenger.profileName.length ? "保存昵称" : "创建并注册"; enabled: accountName.text.trim().length > 0; Layout.fillWidth: true; onClicked: { if (messenger.setProfileName(accountName.text)) account.close() } }
-            Action { text: "复制我的 UID"; enabled: messenger.userCode.length > 0; Layout.fillWidth: true; onClicked: messenger.copyUid() }
+            TextField { id: accountPassword; visible: !messenger.passwordConfigured; placeholderText: "设置登录密码（8–128 位）"; echoMode: TextInput.Password; maximumLength: 128; Layout.fillWidth: true; Layout.minimumWidth: 0 }
+            Label { text: messenger.registrationStatus; wrapMode: Text.Wrap; Layout.fillWidth: true }
+            Label { text: "无需手机号或邮箱。聊天记录仅在本机；服务保存密码加密的身份备份，用于 UID 登录。请保管密码。"; color: window.subdued; wrapMode: Text.Wrap; Layout.fillWidth: true }
+            Action { iconName: "account"; text: messenger.registrationPending ? "UID 注册等待连接中" : messenger.passwordConfigured ? "保存昵称" : "设置密码并注册 UID"; enabled: !messenger.registrationPending && accountName.text.trim().length > 0 && (messenger.passwordConfigured || accountPassword.text.length >= 8); Layout.fillWidth: true; onClicked: { const ok = messenger.passwordConfigured ? messenger.setProfileName(accountName.text) : messenger.registerAccount(accountName.text, accountPassword.text); if (ok) { accountPassword.text = ""; account.close() } } }
+            Action { iconName: "copy"; text: "复制我的 UID"; enabled: messenger.userCode.length > 0; Layout.fillWidth: true; onClicked: messenger.copyUid() }
             ComboBox {
                 visible: typeof accountManager !== "undefined"
                 model: typeof accountManager !== "undefined" ? accountManager.profiles : []
@@ -58,15 +78,26 @@ ApplicationWindow {
                 Layout.fillWidth: true; Layout.minimumWidth: 0
                 onActivated: accountManager.selectAccount(currentIndex)
             }
-            Action { text: "创建另一个账号"; visible: typeof accountManager !== "undefined"; Layout.fillWidth: true; onClicked: accountManager.createAccount() }
+            Action { iconName: "friend"; text: "创建另一个账号"; visible: typeof accountManager !== "undefined"; Layout.fillWidth: true; onClicked: accountManager.createAccount() }
+            Action { iconName: "account"; text: "登录已有 UID"; visible: typeof accountManager !== "undefined"; Layout.fillWidth: true; onClicked: login.open() }
             }
         }
     }
     Sheet {
-        id: settings; title: "连接设置"; standardButtons: Dialog.Close
+        id: login; title: "UID 账号登录"; standardButtons: Dialog.Cancel
+        contentItem: ColumnLayout {
+            TextField { id: loginUid; placeholderText: "UID"; inputMethodHints: Qt.ImhDigitsOnly; maximumLength: 16; Layout.fillWidth: true; Layout.minimumWidth: 0 }
+            TextField { id: loginPassword; placeholderText: "登录密码"; echoMode: TextInput.Password; maximumLength: 128; Layout.fillWidth: true; Layout.minimumWidth: 0 }
+            Label { text: "登录到新的本机资料，不覆盖当前聊天记录。密码丢失后无法恢复身份。"; wrapMode: Text.Wrap; Layout.fillWidth: true; color: window.subdued }
+            Action { iconName: "account"; text: "登录"; enabled: loginUid.text.length > 0 && loginPassword.text.length >= 8; Layout.fillWidth: true; onClicked: { if (accountManager.beginLogin(loginUid.text,loginPassword.text)) { loginPassword.text = ""; login.close() } } }
+        }
+    }
+    Sheet {
+        id: settings; title: "设置"; standardButtons: Dialog.Close
         contentItem: ColumnLayout {
             spacing: 12
             Switch { text: "辅助连接（推荐）"; checked: messenger.assistedConnection; Layout.fillWidth: true; onClicked: messenger.setAssistedConnection(checked) }
+            Action { iconName: "requests"; text: "开启系统消息提醒"; Layout.fillWidth: true; onClicked: messenger.enableMessageReminders() }
             Label { text: messenger.networkStatus; color: window.subdued; wrapMode: Text.Wrap; Layout.fillWidth: true }
             Label { text: "辅助模式通过中继转发加密内容；纯直连不使用中继，跨网成功取决于网络条件。"; wrapMode: Text.Wrap; Layout.fillWidth: true }
             CheckBox { id: customRelay; text: "使用自己的中继"; checked: messenger.customRelay }
@@ -74,7 +105,7 @@ ApplicationWindow {
             Action { visible: customRelay.checked; text: "仅保存到本机"; Layout.fillWidth: true; onClicked: messenger.setRelayEndpoint(relayAddress.text) }
             Action { visible: messenger.customRelay; text: "恢复默认辅助服务"; Layout.fillWidth: true; onClicked: messenger.restoreDefaultRelay() }
             Label { visible: customRelay.checked; text: "不会显示内置地址。更换服务后会重新注册 UID，双方需使用同一服务。"; wrapMode: Text.Wrap; color: window.subdued; Layout.fillWidth: true }
-            Action { text: "复制完整配对码（备用）"; Layout.fillWidth: true; onClicked: messenger.copyLocalPairingCode() }
+            Action { iconName: "copy"; text: "复制完整配对码（备用）"; Layout.fillWidth: true; onClicked: messenger.copyLocalPairingCode() }
         }
     }
     Sheet {
@@ -84,7 +115,7 @@ ApplicationWindow {
             TextField { id: friendUid; placeholderText: "输入对方的数字 UID"; inputMethodHints: Qt.ImhDigitsOnly; maximumLength: 16; Layout.fillWidth: true; Layout.minimumWidth: 0 }
             TextField { id: friendRemark; placeholderText: "备注名（选填）"; maximumLength: 64; Layout.fillWidth: true; Layout.minimumWidth: 0 }
             Label { text: "通过同一辅助服务查找账号，发送后需对方同意。"; color: window.subdued; wrapMode: Text.Wrap; Layout.fillWidth: true }
-            Action { text: "查找并发送好友申请"; enabled: friendUid.text.trim().length > 0; Layout.fillWidth: true; onClicked: { if (messenger.addFriendByUid(friendUid.text, friendRemark.text)) addFriend.close() } }
+            Action { iconName: "friend"; text: "查找并发送好友申请"; enabled: friendUid.text.trim().length > 0; Layout.fillWidth: true; onClicked: { if (messenger.addFriendByUid(friendUid.text, friendRemark.text)) addFriend.close() } }
             CheckBox { id: advancedAdd; text: "使用完整配对码" }
             TextArea { id: friendCode; visible: advancedAdd.checked; placeholderText: "粘贴配对码"; wrapMode: Text.WrapAnywhere; Layout.fillWidth: true; Layout.minimumWidth: 0; Layout.preferredHeight: 80 }
             Action { text: "使用配对码发送申请"; visible: advancedAdd.checked; Layout.fillWidth: true; onClicked: { if (messenger.addContact(friendRemark.text, friendCode.text)) addFriend.close() } }
@@ -129,7 +160,7 @@ ApplicationWindow {
                     }
                 }
             }
-            Action { text: "创建群聊"; enabled: groupName.text.trim().length > 0 && group.selected.length > 0; Layout.fillWidth: true; onClicked: { if (messenger.createGroup(groupName.text, group.selected)) group.close() } }
+            Action { iconName: "group"; text: "创建群聊"; enabled: groupName.text.trim().length > 0 && group.selected.length > 0; Layout.fillWidth: true; onClicked: { if (messenger.createGroup(groupName.text, group.selected)) group.close() } }
         }
     }
     Sheet { id: nickname; title: "我的群昵称"; standardButtons: Dialog.Cancel; contentItem: ColumnLayout {
@@ -164,7 +195,7 @@ ApplicationWindow {
             }
         }
         Label { text: "点选发送，长按移除收藏"; visible: messenger.stickerLibrary.length > 0; color: window.subdued; font.pixelSize: 11 }
-        Action { text: "发送自定义表情图片"; Layout.fillWidth: true; onClicked: { emojis.close(); stickerPicker.open() } }
+        Action { iconName: "emoji"; text: "发送自定义表情图片"; Layout.fillWidth: true; onClicked: { emojis.close(); messenger.chooseAttachment(true) } }
     } }
     FileDialog { id: avatarPicker; title: "选择头像"; nameFilters: ["图片 (*.png *.jpg *.jpeg *.webp)"]; onAccepted: messenger.setAvatar(selectedFile.toString()) }
     FileDialog { id: stickerPicker; title: "选择表情图片"; nameFilters: ["图片 (*.png *.jpg *.jpeg *.webp *.gif)"]; onAccepted: messenger.sendSticker(selectedFile.toString()) }
@@ -181,17 +212,17 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     Image { source: messenger.avatarUrl; Layout.preferredWidth: 42; Layout.preferredHeight: 42; fillMode: Image.PreserveAspectFit; visible: source.toString().length > 0 }
                     Label { text: "双点聊"; font.bold: true; font.pixelSize: 23; color: window.accent; Layout.fillWidth: true; Layout.minimumWidth: 0 }
-                    Action { text: "设置"; onClicked: settings.open() }
+                    Action { iconName: "settings"; text: "设置"; onClicked: settings.open() }
                 }
                 Label { text: messenger.profileName.length ? messenger.profileName + (messenger.userCode.length ? " · UID " + messenger.userCode : " · 待注册") : "欢迎，先创建账号"; color: "#263b56"; Layout.fillWidth: true; Layout.minimumWidth: 0; elide: Text.ElideRight }
                 Label { text: messenger.networkStatus; color: window.subdued; wrapMode: Text.Wrap; font.pixelSize: 12; Layout.fillWidth: true; Layout.minimumWidth: 0 }
                 RowLayout {
                     Layout.fillWidth: true
-                    Action { text: "账号"; Layout.fillWidth: true; onClicked: account.open() }
-                    Action { text: "加好友"; Layout.fillWidth: true; enabled: messenger.profileName.length > 0; onClicked: addFriend.open() }
-                    Action { text: "申请 " + messenger.pendingRequests.length; Layout.fillWidth: true; onClicked: requests.open() }
+                    Action { iconName: "account"; text: "账号"; Layout.fillWidth: true; onClicked: account.open() }
+                    Action { iconName: "friend"; text: "加好友"; Layout.fillWidth: true; enabled: messenger.profileName.length > 0; onClicked: addFriend.open() }
+                    Action { iconName: "requests"; text: "申请 " + messenger.pendingRequests.length; Layout.fillWidth: true; onClicked: requests.open() }
                 }
-                RowLayout { Layout.fillWidth: true; Label { text: "消息"; color: window.subdued; Layout.fillWidth: true } Action { text: "新建群聊"; enabled: messenger.profileName.length > 0; onClicked: group.open() } }
+                RowLayout { Layout.fillWidth: true; Label { text: "消息"; color: window.subdued; Layout.fillWidth: true } Action { iconName: "group"; text: "新建群聊"; enabled: messenger.profileName.length > 0; onClicked: group.open() } }
                 ListView {
                     Layout.fillWidth: true; Layout.fillHeight: true; clip: true; spacing: 5; model: messenger.contacts
                     delegate: ItemDelegate {
@@ -241,8 +272,8 @@ ApplicationWindow {
                                 id: bubbleContents; anchors.fill: parent; anchors.margins: 12; spacing: 6
                                 Label { text: modelData.body; color: "#203b58"; wrapMode: Text.WrapAnywhere; Layout.fillWidth: true; Layout.minimumWidth: 0; font.pixelSize: 15 }
                                 Image { visible: modelData.kind === "sticker"; source: visible ? "data:image/png;base64," + modelData.fileData : ""; Layout.fillWidth: true; Layout.preferredHeight: visible ? 150 : 0; fillMode: Image.PreserveAspectFit }
-                                Action { text: "▶ 播放语音"; visible: modelData.kind === "voice"; onClicked: messenger.playVoice(modelData.fileData) }
-                                Action { text: "保存文件"; visible: modelData.kind === "file-offer"; onClicked: { saveFile.interactionId = modelData.interactionId || ""; saveFile.fileId = modelData.fileId || ""; saveFile.open() } }
+                                Action { iconName: "play"; text: "播放语音"; visible: modelData.kind === "voice"; onClicked: messenger.playVoice(modelData.fileData) }
+                                Action { iconName: "save"; text: "保存文件"; visible: modelData.kind === "file-offer"; onClicked: { saveFile.interactionId = modelData.interactionId || ""; saveFile.fileId = modelData.fileId || ""; saveFile.open() } }
                                 Label { text: (modelData.time || "") + " " + (modelData.delivery || ""); color: window.subdued; font.pixelSize: 10; Layout.fillWidth: true; horizontalAlignment: Text.AlignRight; wrapMode: Text.Wrap }
                             }
                         }
@@ -250,10 +281,10 @@ ApplicationWindow {
                 }
                 RowLayout {
                     Layout.fillWidth: true; spacing: 6
-                    Action { objectName: "chatFile"; text: "文件"; Layout.fillWidth: true; Layout.minimumWidth: 0; onClicked: filePicker.open() }
-                    Action { text: "表情"; Layout.fillWidth: true; Layout.minimumWidth: 0; onClicked: emojis.open() }
-                    Action { text: "语音"; Layout.fillWidth: true; Layout.minimumWidth: 0; enabled: !messenger.recording; onClicked: messenger.recordVoice() }
-                    Action { text: "通话"; Layout.fillWidth: true; Layout.minimumWidth: 0; onClicked: messenger.startCall() }
+                    Action { objectName: "chatFile"; iconName: "file"; text: "文件"; Layout.fillWidth: true; Layout.minimumWidth: 0; onClicked: messenger.chooseAttachment(false) }
+                    Action { iconName: "emoji"; text: "表情"; Layout.fillWidth: true; Layout.minimumWidth: 0; onClicked: emojis.open() }
+                    Action { iconName: "mic"; text: "语音"; Layout.fillWidth: true; Layout.minimumWidth: 0; enabled: !messenger.recording; onClicked: messenger.recordVoice() }
+                    Action { iconName: "phone"; text: "通话"; Layout.fillWidth: true; Layout.minimumWidth: 0; onClicked: messenger.startCall() }
                 }
                 RowLayout {
                     visible: messenger.recording; Layout.fillWidth: true

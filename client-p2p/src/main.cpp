@@ -14,6 +14,7 @@
 #include "local_vault.h"
 #include <QStandardPaths>
 #include "account_manager.h"
+#include "notification_service.h"
 #include <memory>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -75,6 +76,9 @@ int main(int argc, char* argv[])
         LocalVault device(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation));
         return device.saveConversation("__owner_device", {QVariantMap {{"secret", QString::fromLatin1(secret.toBase64())}, {"enabled",application.arguments().contains("--enable-owner-binding")}}}) ? 0 : 3;
     }
+    if (application.arguments().contains("--reset-local-accounts")) {
+        QString error; return AccountManager::resetForPasswordRelease(&error) ? 0 : 4;
+    }
 #endif
 #ifdef Q_OS_ANDROID
     const auto updateLanDiscovery = [](Qt::ApplicationState state) {
@@ -93,15 +97,21 @@ int main(int argc, char* argv[])
     QString acceptancePeer;
     if (!prepareAndroidAcceptance(application, &acceptancePeer)) return 2;
 #endif
+    QString accountResetError;
+    if (!AccountManager::resetForPasswordRelease(&accountResetError)) { std::cerr << accountResetError.toStdString() << std::endl; return 4; }
     AccountManager accounts;
     qputenv("P2P_MESSENGER_DATA_ROOT", accounts.activeRoot().toUtf8());
     qputenv("P2P_MESSENGER_ACCOUNT_PROFILE", "1");
+    qputenv("P2P_MESSENGER_OWNER_DEVICE_ROOT",accounts.baseRoot().toUtf8());
     auto messenger = std::make_unique<MessengerController>();
     traceStartup("controller-ready");
     QQmlApplicationEngine engine;
+    NotificationService notifications;
     engine.rootContext()->setContextProperty(QStringLiteral("messenger"), messenger.get());
     engine.rootContext()->setContextProperty(QStringLiteral("accountManager"), &accounts);
     const auto bindProfile = [&] {
+        QObject::connect(messenger.get(), &MessengerController::incomingNotice, &notifications, &NotificationService::show);
+        QObject::connect(messenger.get(), &MessengerController::notificationPermissionRequested, &notifications, &NotificationService::requestPermission);
         accounts.updateName(messenger->profileName());
         QObject::connect(messenger.get(), &MessengerController::profileNameChanged, &accounts, [&] { accounts.updateName(messenger->profileName()); });
     };
@@ -116,8 +126,10 @@ int main(int argc, char* argv[])
             messenger.reset();
             qputenv("P2P_MESSENGER_DATA_ROOT", root.toUtf8());
             messenger = std::make_unique<MessengerController>();
+            const auto pendingLogin = accounts.takeLogin();
             engine.rootContext()->setContextProperty(QStringLiteral("messenger"), messenger.get());
             bindProfile(); engine.loadFromModule("P2PMessenger", "Main");
+            if (pendingLogin.size()==2) messenger->loginAccount(pendingLogin[0],pendingLogin[1]);
             application.setQuitOnLastWindowClosed(quitOnClose);
             if (engine.rootObjects().isEmpty()) application.exit(1);
         });

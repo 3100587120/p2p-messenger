@@ -7,10 +7,11 @@ export class FileDirectoryStorage {
     this.queue = Promise.resolve();
   }
   async get(key) { return this.data[key]; }
+  async list() { return new Map(Object.entries(this.data)); }
   transaction(action) {
     const result = this.queue.then(async () => {
       const draft = {...this.data};
-      const value = await action({get: async k => draft[k], put: async (k,v) => { draft[k] = v; }});
+      const value = await action({get: async k => draft[k], put: async (k,v) => { draft[k] = v; }, delete: async k => { delete draft[k]; },list: async()=>new Map(Object.entries(draft))});
       mkdirSync(dirname(this.path), {recursive:true});
       writeFileSync(this.path + '.next', JSON.stringify(draft), {mode:0o600});
       renameSync(this.path + '.next',this.path); this.data = draft; return value;

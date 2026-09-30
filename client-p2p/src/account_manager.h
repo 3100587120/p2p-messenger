@@ -10,8 +10,12 @@ public:
     QVariantList profiles() const;
     int activeIndex() const;
     QString activeRoot() const;
+    QString baseRoot() const { return base_; }
+    static bool resetForPasswordRelease(QString* error);
     void updateName(const QString& name);
-    Q_INVOKABLE void createAccount();
+    Q_INVOKABLE bool createAccount();
+    Q_INVOKABLE bool beginLogin(const QString& uid, const QString& password);
+    QStringList takeLogin();
     Q_INVOKABLE void selectAccount(int index);
 signals:
     void profilesChanged();
@@ -20,5 +24,6 @@ signals:
 private:
     QString base_, active_;
     QVariantList profiles_;
+    QString loginUid_, loginPassword_;
     bool persist();
 };

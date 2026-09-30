@@ -37,6 +37,14 @@ QByteArray publicFromPrivate(const QByteArray& secret)
     return ok ? result : QByteArray {};
 }
 
+QByteArray passwordKeys(const QString& password, const QString& salt, int iterations) {
+    const auto rawSalt = unb64(salt);
+    if (password.size() < 8 || password.size() > 128 || rawSalt.size() != 16 || iterations != 600000) return {};
+    auto utf8 = password.toUtf8(); QByteArray keys(64,Qt::Uninitialized);
+    const bool ok = PKCS5_PBKDF2_HMAC(utf8.constData(),utf8.size(),reinterpret_cast<const unsigned char*>(rawSalt.constData()),rawSalt.size(),iterations,EVP_sha256(),keys.size(),reinterpret_cast<unsigned char*>(keys.data())) == 1;
+    utf8.fill('\0'); return ok ? keys : QByteArray {};
+}
+
 QByteArray sharedKey(const QByteArray& secret, const QByteArray& peer,
                      const QByteArray& senderPublic, const QByteArray& recipientPublic)
 {
@@ -116,6 +124,34 @@ QString RelayCrypto::idForPublicKey(const QByteArray& key)
 }
 
 QString RelayCrypto::identityId() const { return idForPublicKey(publicKey_); }
+
+QJsonObject RelayCrypto::makeLoginRecord(const QString& password, const QString& name) const {
+    QByteArray salt(16,Qt::Uninitialized);
+    if (privateKey_.size()!=32 || RAND_bytes(reinterpret_cast<unsigned char*>(salt.data()),salt.size())!=1) return {};
+    const auto encodedSalt = QString::fromLatin1(b64(salt));
+    auto keys = passwordKeys(password,encodedSalt,600000); if (keys.size()!=64) return {};
+    RelayCrypto protection; protection.privateKey_ = keys.last(32); protection.publicKey_ = publicFromPrivate(protection.privateKey_);
+    const auto backup = protection.seal(protection.publicKey_,"account-"+identityId(),QJsonObject {{"private",QString::fromLatin1(b64(privateKey_))},{"name",name.left(64)}});
+    const auto token = QString::fromLatin1(b64(keys.first(32))); keys.fill('\0'); protection.privateKey_.fill('\0');
+    if (backup.isEmpty()) return {};
+    return QJsonObject {{"v",1},{"salt",encodedSalt},{"iterations",600000},{"token",token},{"backup",QString::fromLatin1(backup)},{"name",name.left(64)},{"code",inviteCode()}};
+}
+QString RelayCrypto::loginToken(const QString& password, const QString& salt, int iterations) {
+    auto keys = passwordKeys(password,salt,iterations); if (keys.size()!=64) return {};
+    const auto token=QString::fromLatin1(b64(keys.first(32))); keys.fill('\0'); return token;
+}
+bool RelayCrypto::restoreLoginRecord(LocalVault& vault, const QString& password, const QJsonObject& record) {
+    auto keys = passwordKeys(password,record.value("salt").toString(),record.value("iterations").toInt());
+    const auto expected = publicKeyFromCode(record.value("code").toString());
+    if (keys.size()!=64 || expected.size()!=32 || record.value("backup").toString().size()>8192) return false;
+    RelayCrypto protection; protection.privateKey_=keys.last(32); protection.publicKey_=publicFromPrivate(protection.privateKey_); keys.fill('\0');
+    bool ok=false; const auto plain=protection.open(protection.identityId(),"account-"+idForPublicKey(expected),record.value("backup").toString().toLatin1(),&ok);
+    protection.privateKey_.fill('\0');
+    auto secret=unb64(plain.value("private").toString());
+    if (!ok || publicFromPrivate(secret)!=expected) { secret.fill('\0'); return false; }
+    const bool saved=vault.saveConversation(identitySlot,{QVariantMap {{"private",QString::fromLatin1(b64(secret))}}}); secret.fill('\0');
+    return saved && loadOrCreate(vault);
+}
 
 QString RelayCrypto::inviteCode() const
 {
