@@ -27,6 +27,7 @@ configure_file(src/relay_build_config.h.in
 qt_standard_project_setup(REQUIRES 6.5)
 
 qt_add_executable(P2PMessenger
+    src/background_session.cpp src/background_session.h
     src/account_manager.cpp src/account_manager.h
     src/main.cpp
     src/photo_picker.cpp src/photo_picker.h
@@ -59,6 +60,9 @@ qt_add_qml_module(P2PMessenger
 )
 
 target_link_libraries(P2PMessenger PRIVATE Qt6::Quick Qt6::QuickControls2 Qt6::Network Qt6::WebSockets Qt6::Multimedia)
+if(ANDROID)
+    target_link_libraries(P2PMessenger PRIVATE Qt6::CorePrivate)
+endif()
 if(WIN32)
     target_link_libraries(P2PMessenger PRIVATE shell32 user32)
 endif()
@@ -189,6 +193,7 @@ endif()
 if(P2P_MESSENGER_BUILD_RELAY_TESTS AND WIN32)
     if(P2P_MESSENGER_WITH_DAEMON)
         set(_friend_flow_sources
+            src/background_session.cpp src/background_session.h
             src/account_manager.cpp src/account_manager.h
             tests/friend_flow_test.cpp
             src/messenger_controller.cpp src/messenger_controller.h

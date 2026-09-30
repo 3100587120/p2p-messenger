@@ -71,11 +71,15 @@ public:
     Q_INVOKABLE bool setAvatar(const QString& path);
     Q_INVOKABLE void chooseAvatar();
     Q_INVOKABLE void chooseAttachment(bool sticker);
+    Q_INVOKABLE void choosePhoto(bool camera = false);
+    Q_INVOKABLE bool sendPhoto(const QString& path);
+    void suspendForBackground();
     Q_INVOKABLE void enableMessageReminders() { emit notificationPermissionRequested(); }
     Q_INVOKABLE bool setGroupNickname(const QString& name);
     Q_INVOKABLE bool addFriendByUid(const QString& uid, const QString& remark);
     Q_INVOKABLE void copyUid();
     bool recording() const { return recording_; }
+    bool voicePermissionPending() const { return voice_.permissionPending(); }
     QString callState() const { return callState_; }
     QString callPeerName() const { return callPeerName_; }
     Q_INVOKABLE bool sendSticker(const QString& path);
@@ -126,6 +130,7 @@ public:
     Q_INVOKABLE bool testPeerConnection(const QString& invite);
 
 signals:
+    void photoPickerRequested();
     void notificationPermissionRequested();
     void incomingNotice(const QString& title, const QString& text);
     void avatarPickerRequested();

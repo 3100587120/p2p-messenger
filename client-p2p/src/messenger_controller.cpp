@@ -330,7 +330,7 @@ MessengerController::MessengerController(QObject* parent)
             const auto fileId = message.value(QStringLiteral("fileId")).toString();
             const auto name = QFileInfo(message.value(QStringLiteral("name")).toString()).fileName();
             const auto mediaKind = message.value(QStringLiteral("mediaKind")).toString();
-            if (!mediaKind.isEmpty() && mediaKind != "voice" && mediaKind != "sticker") { relay_.rejectCurrentPacket(); return; }
+            if (!mediaKind.isEmpty() && mediaKind != "voice" && mediaKind != "sticker" && mediaKind != "photo") { relay_.rejectCurrentPacket(); return; }
             const auto size = message.value(QStringLiteral("size")).toInteger(-1);
             const auto count = message.value(QStringLiteral("count")).toInt();
             const auto index = message.value(QStringLiteral("index")).toInt(-1);
@@ -373,13 +373,14 @@ MessengerController::MessengerController(QObject* parent)
                 relay_.rejectCurrentPacket(); setError(tr("收到的文件校验失败，请让对方重发")); return;
             }
             if (mediaKind == "voice" && (file.isEmpty() || file.size() > 1920000 || file.size() % 2)) { relay_.rejectCurrentPacket(); return; }
-            if (mediaKind == "sticker") {
-                QBuffer imageBuffer(&file); imageBuffer.open(QIODevice::ReadOnly); QImageReader imageReader(&imageBuffer, "PNG");
+            if (mediaKind == "sticker" || mediaKind == "photo") {
+                QBuffer imageBuffer(&file); imageBuffer.open(QIODevice::ReadOnly); QImageReader imageReader(&imageBuffer);
                 const auto dims = imageReader.size();
-                if (!dims.isValid() || dims.width() > 512 || dims.height() > 512 || file.size() > 196608 || imageReader.read().isNull()) { relay_.rejectCurrentPacket(); return; }
+                const int limit=mediaKind=="photo"?1600:512;
+                if (!dims.isValid() || dims.width()>limit || dims.height()>limit || (mediaKind=="sticker" && file.size()>196608) || imageReader.read().isNull()) { relay_.rejectCurrentPacket(); return; }
             }
             if (!storeMessageForContact(contactId, QVariantMap {
-                {QStringLiteral("body"), mediaKind == "voice" ? tr("语音 %1 秒").arg(qMax(1, file.size() / 32000)) : mediaKind == "sticker" ? tr("[表情图片]") : tr("文件：%1（可保存）").arg(name)},
+                {QStringLiteral("body"), mediaKind == "voice" ? tr("语音 %1 秒").arg(qMax(1, file.size() / 32000)) : mediaKind == "photo" ? tr("[照片]") : mediaKind == "sticker" ? tr("[表情图片]") : tr("文件：%1（可保存）").arg(name)},
                 {QStringLiteral("outgoing"), false},
                 {QStringLiteral("kind"), mediaKind.isEmpty() ? QStringLiteral("file-offer") : mediaKind},
                 {QStringLiteral("fileId"), fileId},
@@ -866,7 +867,7 @@ bool MessengerController::sendMedia(const QByteArray& data, const QString& kind,
     QList<QJsonObject> packets;
     const auto count = int((data.size() + 12287) / 12288);
     const auto hash = QString::fromLatin1(QCryptographicHash::hash(data, QCryptographicHash::Sha256).toHex());
-    for (int i = 0; i < count; ++i) packets.append(QJsonObject {{"type", "file_chunk"}, {"mediaKind", kind}, {"fileId", id}, {"name", kind == "voice" ? "voice.pcm" : "sticker.png"}, {"size", int(data.size())}, {"count", count}, {"index", i}, {"sha256", hash}, {"data", QString::fromLatin1(data.mid(i * 12288, 12288).toBase64(QByteArray::Base64UrlEncoding))}});
+    for (int i = 0; i < count; ++i) packets.append(QJsonObject {{"type", "file_chunk"}, {"mediaKind", kind}, {"fileId", id}, {"name", kind == "voice" ? "voice.pcm" : kind=="photo" ? "photo.jpg" : "sticker.png"}, {"size", int(data.size())}, {"count", count}, {"index", i}, {"sha256", hash}, {"data", QString::fromLatin1(data.mid(i * 12288, 12288).toBase64(QByteArray::Base64UrlEncoding))}});
     if (target.value("group").toBool()) {
         for (auto& packet : packets) { packet.insert("groupId", target.value("groupId").toString()); packet.insert("nickname", target.value("myNickname",profileName_).toString()); }
         bool sent = false;
@@ -878,7 +879,38 @@ bool MessengerController::sendMedia(const QByteArray& data, const QString& kind,
         }
         if (!sent) { setError(tr("群里没有其他成员")); return false; }
     } else if (relay_.sendBatch(key, packets).size() != count) { setError(tr("语音或表情未能保存到发送队列")); return false; }
-    return storeMessageForContact(contactId, QVariantMap {{"body", kind == "voice" ? tr("语音 %1 秒").arg(qMax(1, data.size()/32000)) : tr("[表情图片]")}, {"kind", kind}, {"outgoing", true}, {"fileData", QString::fromLatin1(data.toBase64())}, {"time", QDateTime::currentDateTime().toString("HH:mm")}});
+    return storeMessageForContact(contactId, QVariantMap {{"body", kind == "voice" ? tr("语音 %1 秒").arg(qMax(1, data.size()/32000)) : kind=="photo" ? tr("[照片]") : tr("[表情图片]")}, {"kind", kind}, {"outgoing", true}, {"fileData", QString::fromLatin1(data.toBase64())}, {"time", QDateTime::currentDateTime().toString("HH:mm")}});
+}
+bool MessengerController::sendPhoto(const QString& path) {
+    const auto local=QUrl(path).isLocalFile()?QUrl(path).toLocalFile():path;
+    QImageReader reader(local); reader.setAutoTransform(true); const auto dims=reader.size();
+    if (!dims.isValid() || dims.width()>30000 || dims.height()>30000 || QFileInfo(local).size()>20*1024*1024) { setError(tr("照片无法读取或超过 20 MB")); return false; }
+    reader.setScaledSize(dims.scaled(1600,1600,Qt::KeepAspectRatio)); auto image=reader.read();
+    if (image.isNull()) { setError(tr("照片格式不支持，请换一张照片")); return false; }
+    image=image.scaled(1600,1600,Qt::KeepAspectRatio,Qt::SmoothTransformation);
+    QByteArray bytes;
+    for (int quality : {85,70,55}) { bytes.clear(); QBuffer output(&bytes); output.open(QIODevice::WriteOnly); if (!image.save(&output,"JPEG",quality)) return false; if (bytes.size()<=1920000) break; }
+    return sendMedia(bytes,"photo",activeContactId_);
+}
+void MessengerController::choosePhoto(bool camera) {
+#ifdef Q_OS_ANDROID
+    const auto contact=activeContactId_;
+    if (!openAvatarGallery(this,[this,contact](QString file,QString error) {
+        if (!error.isEmpty()) { setError(error); return; } if (file.isEmpty()) return;
+        if (activeContactId_!=contact) { setError(tr("会话已切换，请重新选择照片")); return; }
+        sendPhoto(file);
+    },camera?4:3)) setError(tr("系统图片选择器正在使用，或无法启动"));
+#else
+    Q_UNUSED(camera); emit photoPickerRequested();
+#endif
+}
+void MessengerController::suspendForBackground() {
+    endCall(); finishVoice(false);
+    if (identityRefresh_) identityRefresh_->stop();
+    if (pendingRefresh_) pendingRefresh_->stop();
+    relay_.setEnabled(false);
+    relay_.blockSignals(true); daemon_.blockSignals(true); gatewayMapper_.blockSignals(true);
+    daemon_.stop();
 }
 bool MessengerController::sendSticker(const QString& path) {
     auto local = QUrl(path).isLocalFile() ? QUrl(path).toLocalFile() : path;
@@ -935,8 +967,9 @@ void MessengerController::answerCall() {
 void MessengerController::endCall() {
     if (callState_ == "idle") return;
     relay_.sendLive(callKey_,QJsonObject {{"type","call_end"},{"callId",callId_}});
-    callDeadline_.stop(); callHeartbeat_.stop(); callPing_.clear(); voice_.stopCapture(false); voice_.stopPlayback();
-    callState_ = "idle"; callId_.clear(); callKey_.clear(); callPeerId_.clear(); emit voiceChanged();
+    callDeadline_.stop(); callHeartbeat_.stop(); callPing_.clear();
+    callState_ = "idle"; callId_.clear(); callKey_.clear(); callPeerId_.clear();
+    voice_.stopCapture(false); voice_.stopPlayback(); emit voiceChanged();
 }
 void MessengerController::receiveCall(const QString& sender, const QByteArray& key, const QJsonObject& msg) {
     const auto type = msg.value("type").toString(), id = msg.value("callId").toString();

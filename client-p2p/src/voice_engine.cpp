@@ -90,7 +90,9 @@ void VoiceEngine::stopCapture(bool keepRecording) {
     recordDeadline_.stop();
     if (input_) { auto* old = input_; input_ = nullptr; old->disconnect(this); old->stop(); old->deleteLater(); }
     frame_.clear();
-    const auto pcm = recorded_.first(1920000); recorded_.clear();
+    // first(n) requires n <= size(). Short/empty recordings used to perform
+    // an out-of-bounds read here (send, hang-up and even opening a picker).
+    const auto pcm = recorded_.left(1920000); recorded_.clear();
     emit recordingChanged(false);
     if (keepRecording && !live_ && !pcm.isEmpty()) emit recordingReady(pcm);
 }

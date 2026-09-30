@@ -1,11 +1,14 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="io.p2pmessenger.app"
     android:installLocation="auto"
-    android:versionCode="16"
-    android:versionName="0.5.1-test">
+    android:versionCode="17"
+    android:versionName="0.5.2-test">
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!-- %%INSERT_PERMISSIONS -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
@@ -35,7 +38,14 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
             <meta-data android:name="android.app.lib_name" android:value="P2PMessenger" />
+            <meta-data android:name="android.app.background_running" android:value="true" />
         </activity>
+        <service android:name="io.p2pmessenger.app.MessageService" android:process=":messages" android:exported="false" android:stopWithTask="false" android:foregroundServiceType="remoteMessaging">
+            <meta-data android:name="android.app.lib_name" android:value="P2PMessenger" />
+            <meta-data android:name="android.app.arguments" android:value="--message-service" />
+            <meta-data android:name="android.app.background_running" android:value="true" />
+        </service>
+        <receiver android:name="io.p2pmessenger.app.MessageBootReceiver" android:exported="false"><intent-filter><action android:name="android.intent.action.BOOT_COMPLETED" /></intent-filter></receiver>
         <activity android:name="io.p2pmessenger.app.AvatarPhotoActivity" android:exported="false" android:theme="@android:style/Theme.Translucent.NoTitleBar" />
         <provider
             android:name="androidx.core.content.FileProvider"

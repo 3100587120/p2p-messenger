@@ -36,6 +36,35 @@ NotificationService::~NotificationService() {
     if (window_) { NOTIFYICONDATAW icon {}; icon.cbSize=sizeof(icon); icon.hWnd=static_cast<HWND>(window_); icon.uID=1; Shell_NotifyIconW(NIM_DELETE,&icon); DestroyWindow(static_cast<HWND>(window_)); }
 #endif
 }
+bool NotificationService::backgroundEnabled() const {
+#ifdef Q_OS_ANDROID
+    const auto result=QJniObject::callStaticMethod<jboolean>("io/p2pmessenger/app/MessageService","enabled","(Landroid/content/Context;)Z",QNativeInterface::QAndroidApplication::context().object<jobject>());
+    QJniEnvironment().checkAndClearExceptions(); return result;
+#else
+    return false;
+#endif
+}
+void NotificationService::setBackgroundEnabled(bool enabled) {
+#ifdef Q_OS_ANDROID
+    const auto ok=QJniObject::callStaticMethod<jboolean>("io/p2pmessenger/app/MessageService","configure","(Landroid/content/Context;Z)Z",QNativeInterface::QAndroidApplication::context().object<jobject>(),jboolean(enabled));
+    if(QJniEnvironment().checkAndClearExceptions() || !ok) emit backgroundError(tr("后台连接服务启动失败，请在系统设置允许后台运行"));
+#else
+    Q_UNUSED(enabled);
+#endif
+    emit backgroundEnabledChanged();
+}
+void NotificationService::accountReady() {
+#ifdef Q_OS_ANDROID
+    const auto ok=QJniObject::callStaticMethod<jboolean>("io/p2pmessenger/app/MessageService","accountReady","(Landroid/content/Context;)Z",QNativeInterface::QAndroidApplication::context().object<jobject>());
+    if(QJniEnvironment().checkAndClearExceptions() || !ok) emit backgroundError(tr("后台收消息服务未能启动，请允许后台运行后重试"));
+#endif
+}
+void NotificationService::openBackgroundSettings() {
+#ifdef Q_OS_ANDROID
+    const auto ok=QJniObject::callStaticMethod<jboolean>("io/p2pmessenger/app/MessageService","openBackgroundSettings","(Landroid/content/Context;)Z",QNativeInterface::QAndroidApplication::context().object<jobject>());
+    if(QJniEnvironment().checkAndClearExceptions() || !ok)emit backgroundError(tr("无法打开电池设置，请在系统设置中允许双点聊后台运行"));
+#endif
+}
 void NotificationService::requestPermission() {
 #ifdef Q_OS_ANDROID
     QJniObject::callStaticMethod<void>("io/p2pmessenger/app/MessageNotifications","requestPermission","(Landroid/content/Context;)V",QNativeInterface::QAndroidApplication::context().object<jobject>());
@@ -43,7 +72,7 @@ void NotificationService::requestPermission() {
 #endif
 }
 void NotificationService::show(const QString& title, const QString& body) {
-    if (QGuiApplication::applicationState() == Qt::ApplicationActive) return; // Foreground uses the in-app banner.
+    if (qobject_cast<QGuiApplication*>(QCoreApplication::instance()) && QGuiApplication::applicationState() == Qt::ApplicationActive) return;
 #ifdef Q_OS_WIN
     if (!window_) return;
     NOTIFYICONDATAW icon {}; icon.cbSize=sizeof(icon); icon.hWnd=static_cast<HWND>(window_); icon.uID=1; icon.uFlags=NIF_INFO; icon.dwInfoFlags=NIIF_INFO;

@@ -227,7 +227,9 @@ void RelayClient::setEnabled(bool enabled)
         failureNotice_.stop();
         pendingError_.clear();
         failureReported_ = false;
-        socket_.close();
+        // A released session must not process buffered frames while the service
+        // has already acquired the encrypted database's writer lock.
+        socket_.abort();
     }
 }
 
@@ -372,6 +374,7 @@ void RelayClient::sendAck(const QByteArray& recipientPublicKey, const QString& o
 
 void RelayClient::onFrame(const QString& text)
 {
+    if (!enabled_) return;
     const auto document = QJsonDocument::fromJson(text.toUtf8());
     if (!document.isObject()) return;
     const auto frame = document.object();

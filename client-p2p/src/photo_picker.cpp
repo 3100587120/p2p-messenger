@@ -25,6 +25,13 @@ void result(JNIEnv* env, jclass, jstring path, jstring error) {
 }
 }
 #endif
+bool systemPickerOpen() {
+#ifdef Q_OS_ANDROID
+    return !receiver.isNull();
+#else
+    return false;
+#endif
+}
 bool openAvatarGallery(QObject* target, std::function<void(QString, QString)> callback, int mode) {
 #ifdef Q_OS_ANDROID
     if (receiver) return false;

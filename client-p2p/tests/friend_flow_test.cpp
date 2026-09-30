@@ -11,6 +11,7 @@
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickItem>
+#include <QQuickWindow>
 #include <iostream>
 #include <QImage>
 #include <QBuffer>
@@ -19,6 +20,35 @@
 #include <QRandomGenerator>
 #include <memory>
 #include "account_manager.h"
+#include "voice_engine.h"
+#include "background_session.h"
+
+class VoiceEngineRegression {
+public:
+    static int run() {
+        VoiceEngine voice; QByteArray received; int ready=0;
+        QObject::connect(&voice,&VoiceEngine::recordingReady,&voice,[&](const QByteArray& data){received=data;++ready;});
+        for(int size : {0,320,16000,1920000,1920320}) {
+            voice.recorded_=QByteArray(size,'x');voice.live_=false;received.clear();const int before=ready;
+            voice.stopCapture(true);
+            if(received.size()!=qMin(size,1920000) || ready-before!=(size>0?1:0) || !voice.recorded_.isEmpty())return 17;
+        }
+        voice.live_=true;voice.recorded_.clear();voice.stopCapture(false);voice.stopPlayback();
+        voice.stopCapture(false); // Picker/background/destruction can stop an already empty recorder.
+        std::cout<<"EMPTY_SHORT_FULL_RECORDING_STOP_AND_HANGUP_NO_OUT_OF_BOUNDS=PASS"<<std::endl;return 0;
+    }
+};
+static int backgroundSessionRegression(QGuiApplication& app,const QString& root) {
+    BackgroundSession ui(root);int suspended=0,resumed=0;ui.setCallbacks([&]{++suspended;},[&]{++resumed;});
+    if(!ui.claimInitial() || !BackgroundSession::foregroundRequested(root))return 18;
+    QLockFile service(QDir(root).filePath("session-owner.lock"));service.setStaleLockTime(0);
+    if(service.tryLock(0))return 18;
+    ui.setActive(false);if(suspended!=1 || ui.ownsSession() || BackgroundSession::foregroundRequested(root) || !service.tryLock(0))return 18;
+    ui.setActive(true);if(!BackgroundSession::foregroundRequested(root) || ui.ownsSession())return 18;
+    service.unlock();QTimer::singleShot(1250,&app,&QCoreApplication::quit);app.exec();
+    if(!ui.ownsSession() || resumed!=1 || service.tryLock(0))return 18;
+    std::cout<<"GUI_SERVICE_SINGLE_WRITER_LOCK_AND_FOREGROUND_HANDOVER=PASS"<<std::endl;return 0;
+}
 
 static QString vaultFile(const QString& root, const QString& slot)
 {
@@ -247,6 +277,8 @@ static int featureRegression(const QString& root) {
         if (!noise.save(noisy) || !c.setAvatar(noisy) || c.avatarUrl().mid(22).size()>32768) return 10;
         avatar = c.avatarUrl();
         if (!c.sendSticker(file)) return 10;
+        if (!c.sendPhoto(file) || c.messages().last().toMap().value("kind")!="photo")return 10;
+        c.selectContact("private");if(!c.queueFile(noisy))return 10;c.selectContact("group");
         auto* relay = c.findChild<RelayClient*>(); if (!relay) return 10;
         relay->packetReceived(peerId,peerKey,QJsonObject {{"type","group_text"},{"groupId","group-test"},{"body","hello"},{"nickname","对方群昵称"}});
         if (!c.messages().last().toMap().value("body").toString().startsWith("对方群昵称：")) return 10;
@@ -372,13 +404,69 @@ static int cloudLoginRegression(QGuiApplication& app,const QString& root) {
     return pass?0:16;
 }
 
+static int publicHeadlessMediaRegression(QCoreApplication& app,const QString& root) {
+    const auto endpoint=qEnvironmentVariable("P2P_MESSENGER_RELAY_URL");
+    if(!endpoint.startsWith("wss://"))return 18;
+    const auto aliceRoot=QDir(root).filePath("alice"),bobRoot=QDir(root).filePath("bob");
+    LocalVault aliceVault(aliceRoot),bobVault(bobRoot);RelayCrypto aliceKey,bobKey;
+    if(!aliceKey.loadOrCreate(aliceVault)||!bobKey.loadOrCreate(bobVault))return 18;
+    const auto profile=[&](LocalVault& vault,const RelayCrypto& peer,const QString& name) {
+        return vault.saveConversation("__profile",{QVariantMap {{"profileName",name},{"contacts",QVariantList {QVariantMap {{"id","peer"},{"name","Peer"},{"uri",peer.identityId()},{"transport","relay"},{"ready",true},{"relayPublic",peer.inviteCode()}}}},{"network",QVariantMap {{"relayEndpoint",endpoint},{"assistedConnection",true}}}}});
+    };
+    if(!profile(aliceVault,bobKey,"Sender")||!profile(bobVault,aliceKey,"Background receiver"))return 18;
+    qputenv("P2P_MESSENGER_DISABLE_DIRECT_ENGINE","1");
+    qputenv("P2P_MESSENGER_DATA_ROOT",aliceRoot.toUtf8());MessengerController alice;
+    qputenv("P2P_MESSENGER_DATA_ROOT",bobRoot.toUtf8());MessengerController bob;
+    alice.selectContact("peer");bob.selectContact("peer");
+    const auto photo=QDir(root).filePath("photo.png"),file=QDir(root).filePath("file.txt");
+    QImage image(480,320,QImage::Format_RGB32);image.fill(Qt::blue);if(!image.save(photo))return 18;
+    QFile fixture(file);if(!fixture.open(QIODevice::WriteOnly))return 18;fixture.write("public-relay-file-fixture");fixture.close();
+    bool sent=false,pass=false;int notifications=0;
+    QObject::connect(&bob,&MessengerController::incomingNotice,&app,[&](const QString&,const QString&){++notifications;});
+    const QByteArray pcm(32000,'\0');
+    QTimer timer;
+    QObject::connect(&timer,&QTimer::timeout,&app,[&]{
+        if(!sent && alice.networkStatus().contains(QStringLiteral("自检通过")) && bob.networkStatus().contains(QStringLiteral("自检通过"))) {
+            sent=true;
+            if(!alice.sendMessage("public-headless-test") || !alice.sendPhoto(photo) || !alice.sendSticker(photo) || !alice.queueFile(file)){app.quit();return;}
+            auto* relay=alice.findChild<RelayClient*>();if(!relay){app.quit();return;}
+            QList<QJsonObject> packets;
+            const auto id=QUuid::createUuid().toString(QUuid::WithoutBraces);
+            const auto hash=QString::fromLatin1(QCryptographicHash::hash(pcm,QCryptographicHash::Sha256).toHex());
+            for(int i=0;i<3;++i)packets.append(QJsonObject {{"type","file_chunk"},{"mediaKind","voice"},{"fileId",id},{"name","voice.pcm"},{"size",pcm.size()},{"count",3},{"index",i},{"sha256",hash},{"data",QString::fromLatin1(pcm.mid(i*12288,12288).toBase64(QByteArray::Base64UrlEncoding))}});
+            if(relay->sendBatch(RelayClient::publicKeyFromCode(bobKey.inviteCode()),packets).size()!=3){app.quit();return;}
+        }
+        bool text=false,photoReceived=false,sticker=false,voice=false,fileReceived=false;
+        for(const auto& value:bob.messages()) {
+            const auto row=value.toMap();if(row.value("outgoing").toBool())continue;
+            const auto bytes=QByteArray::fromBase64(row.value("fileData").toString().toLatin1());
+            text|=row.value("body")=="public-headless-test";
+            photoReceived|=row.value("kind")=="photo" && !QImage::fromData(bytes).isNull();
+            sticker|=row.value("kind")=="sticker" && !QImage::fromData(bytes).isNull();
+            voice|=row.value("kind")=="voice" && bytes==pcm;
+            fileReceived|=row.value("kind")=="file-offer" && bytes=="public-relay-file-fixture";
+        }
+        if(text&&photoReceived&&sticker&&voice&&fileReceived&&notifications>=5){pass=true;app.quit();}
+    });
+    timer.start(250);QTimer::singleShot(60000,&app,&QCoreApplication::quit);app.exec();
+    std::cout<<"PUBLIC_WSS_QCORE_NO_WINDOW_PHOTO_VOICE_FILE_TEXT_AND_NOTICES="<<(pass?"PASS":"FAIL")<<std::endl;
+    if(!pass)std::cerr<<alice.lastError().toStdString()<<" / "<<bob.lastError().toStdString()<<std::endl;
+    return pass?0:18;
+}
+
 int main(int argc, char** argv)
 {
+    for(int i=1;i<argc;++i)if(QString::fromLocal8Bit(argv[i])=="--public-headless-media-e2e") {
+        QCoreApplication app(argc,argv);QTemporaryDir root(QDir::tempPath()+"/headless-media-XXXXXX");
+        return root.isValid()?publicHeadlessMediaRegression(app,root.path()):18;
+    }
     qputenv("QT_QPA_PLATFORM", "offscreen");
     QGuiApplication app(argc, argv);
     QTemporaryDir root(QDir::tempPath() + "/friend-flow-XXXXXX");
     if (!root.isValid()) return 2;
     qputenv("P2P_MESSENGER_DATA_ROOT", root.path().toUtf8());
+    if(app.arguments().contains("--voice-stop-regression"))return VoiceEngineRegression::run();
+    if(app.arguments().contains("--background-session-regression"))return backgroundSessionRegression(app,root.path());
     if (app.arguments().contains("--reset-regression")) return resetRegression(root.path());
     if (app.arguments().contains("--cloud-login-e2e")) return cloudLoginRegression(app,root.path());
     if (app.arguments().contains("--cloud-uid-e2e")) return cloudUidRegression(app, root.path());
@@ -388,6 +476,7 @@ int main(int argc, char** argv)
         const auto path = app.arguments().value(pathIndex + 1);
         if (pathIndex < 0 || !QFileInfo::exists(path)) return 9;
         MessengerController controller;
+        controller.setProfileName("界面预览");
         QQmlApplicationEngine engine;
         bool warnings = false;
         QObject::connect(&engine, &QQmlEngine::warnings, &app, [&](const QList<QQmlError>& errors) {
@@ -427,6 +516,19 @@ int main(int argc, char** argv)
             std::cerr << "QML portrait layout failed: width=" << window->property("width").toInt()
                       << " mobile=" << window->property("mobile").toBool() << " warnings=" << warnings << std::endl;
             return 9;
+        }
+        const auto screenshotIndex=app.arguments().indexOf("--screenshot-dir");
+        if(screenshotIndex>=0) {
+            const auto directory=app.arguments().value(screenshotIndex+1); QDir().mkpath(directory);
+            auto* quickWindow=qobject_cast<QQuickWindow*>(window); if(!quickWindow)return 9;
+            const auto capture=[&](const QString& name) {
+                QTimer::singleShot(200,&app,&QCoreApplication::quit);app.exec();
+                return quickWindow->grabWindow().save(QDir(directory).filePath(name));
+            };
+            if(!capture("chat-390.png"))return 9;
+            window->setProperty("expandedTools",true);if(!capture("tools-390.png"))return 9;
+            window->setProperty("showThread",false);if(!capture("messages-390.png"))return 9;
+            window->setProperty("mobileTab",2);if(!capture("account-tab-390.png"))return 9;
         }
         std::cout << "QML_DESKTOP_AND_320_390_PORTRAIT_CONTROLS_FIT=PASS" << std::endl;
         return 0;

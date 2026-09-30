@@ -24,6 +24,7 @@ signals:
     void recordingReady(const QByteArray& pcm);
     void errorOccurred(const QString& reason);
 private:
+    friend class VoiceEngineRegression;
     QAudioSource* input_ {nullptr};
     QAudioSink* output_ {nullptr};
     QIODevice* playbackDevice_ {nullptr};

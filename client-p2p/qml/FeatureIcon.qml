@@ -34,6 +34,10 @@ Canvas {
             c.beginPath(); c.moveTo(17,14); c.bezierCurveTo(21,14,22,17,22,20); c.stroke(); break;
         case "file":
             line(c, [[3,19],[3,5],[9,5],[12,8],[21,8],[21,19],[3,19]], true); break;
+        case "plus": line(c,[[12,4],[12,20]]);line(c,[[4,12],[20,12]]);break;
+        case "photo": c.strokeRect(3,4,18,16);circle(c,8,9,1.5);line(c,[[4,18],[10,12],[14,16],[17,12],[21,17]]);break;
+        case "camera": line(c,[[3,8],[7,8],[9,5],[15,5],[17,8],[21,8],[21,20],[3,20]],true);circle(c,12,14,4);break;
+        case "keyboard": c.strokeRect(2,6,20,13);line(c,[[6,10],[6,11]]);line(c,[[10,10],[10,11]]);line(c,[[14,10],[14,11]]);line(c,[[18,10],[18,11]]);line(c,[[7,15],[17,15]]);break;
         case "emoji":
             circle(c,12,12,9); circle(c,9,9,.5); circle(c,15,9,.5);
             c.beginPath(); c.arc(12,12,5,.2,Math.PI-.2); c.stroke(); break;
