@@ -1,0 +1,50 @@
+name: Android APK runtime acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        required: true
+        default: android-runtime-0.4.9
+        type: string
+      receiver_invite_code:
+        description: Ephemeral Windows controller invitation on another network
+        required: true
+        type: string
+
+jobs:
+  android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write # The APK is in a draft release, visible only to writers.
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download exact APK under test
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: gh release download "$RELEASE_TAG" --pattern '*.apk' --dir runtime-apk
+      - name: Enable emulator acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Run real ARM64 APK with Android native translation
+        uses: reactivecircus/android-emulator-runner@v2
+        env:
+          RECEIVER_INVITE_CODE: ${{ inputs.receiver_invite_code }}
+        with:
+          api-level: 30
+          target: google_apis
+          arch: x86_64
+          profile: pixel_2
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot -camera-back none
+          script: bash scripts/test-android-runtime.sh
+      - name: Save runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-runtime-evidence
+          path: runtime-evidence/
+          if-no-files-found: warn

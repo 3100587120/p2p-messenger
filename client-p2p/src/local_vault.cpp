@@ -105,14 +105,17 @@ QByteArray loadAndroidKey()
 {
     auto context = QNativeInterface::QAndroidApplication::context();
     QJniEnvironment environment;
-    auto clazz = environment->FindClass("org/p2pmessenger/VaultKeyStore");
+    auto clazz = environment.findClass("org/p2pmessenger/VaultKeyStore");
+    if (environment.checkAndClearExceptions() || !clazz) return {};
     auto method = environment->GetStaticMethodID(clazz, "loadOrCreate", "(Landroid/content/Context;Ljava/lang/String;)[B");
+    if (environment.checkAndClearExceptions() || !method) return {};
     auto name = QJniObject::fromString(QStringLiteral("master-key"));
     auto array = static_cast<jbyteArray>(environment->CallStaticObjectMethod(clazz, method, context.object<jobject>(), name.object<jstring>()));
-    if (!array || environment.checkAndClearExceptions()) return {};
+    if (environment.checkAndClearExceptions() || !array) return {};
     const auto size = environment->GetArrayLength(array);
     QByteArray key(size, Qt::Uninitialized);
     environment->GetByteArrayRegion(array, 0, size, reinterpret_cast<jbyte*>(key.data()));
+    environment->DeleteLocalRef(array);
     return environment.checkAndClearExceptions() ? QByteArray {} : key;
 }
 
@@ -120,20 +123,23 @@ QByteArray androidCrypt(const char* method, const QByteArray& key, const QByteAr
                         const QByteArray& input)
 {
     QJniEnvironment environment;
+    auto clazz = environment.findClass("org/p2pmessenger/VaultKeyStore");
+    if (environment.checkAndClearExceptions() || !clazz) return {};
+    auto methodId = environment->GetStaticMethodID(clazz, method, "([B[B[B)[B");
+    if (environment.checkAndClearExceptions() || !methodId) return {};
     auto makeArray = [&environment](const QByteArray& bytes) {
         auto array = environment->NewByteArray(bytes.size());
         environment->SetByteArrayRegion(array, 0, bytes.size(), reinterpret_cast<const jbyte*>(bytes.constData()));
         return array;
     };
     auto keyArray = makeArray(key), nonceArray = makeArray(nonce), inputArray = makeArray(input);
-    auto clazz = environment->FindClass("org/p2pmessenger/VaultKeyStore");
-    auto methodId = environment->GetStaticMethodID(clazz, method, "([B[B[B)[B");
     auto result = static_cast<jbyteArray>(environment->CallStaticObjectMethod(clazz, methodId, keyArray, nonceArray, inputArray));
     environment->DeleteLocalRef(keyArray); environment->DeleteLocalRef(nonceArray); environment->DeleteLocalRef(inputArray);
-    if (!result || environment.checkAndClearExceptions()) return {};
+    if (environment.checkAndClearExceptions() || !result) return {};
     const auto array = result; const auto size = environment->GetArrayLength(array);
     QByteArray bytes(size, Qt::Uninitialized);
     environment->GetByteArrayRegion(array, 0, size, reinterpret_cast<jbyte*>(bytes.data()));
+    environment->DeleteLocalRef(array);
     return environment.checkAndClearExceptions() ? QByteArray {} : bytes;
 }
 #endif

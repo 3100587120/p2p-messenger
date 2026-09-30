@@ -10,6 +10,7 @@
 #endif
 
 #include "messenger_controller.h"
+#include "android_acceptance.h"
 
 namespace {
 void traceStartup(const char* stage)
@@ -46,6 +47,10 @@ int main(int argc, char* argv[])
     updateLanDiscovery(application.applicationState());
 #endif
 
+#if defined(Q_OS_ANDROID) && !defined(QT_NO_DEBUG)
+    QString acceptancePeer;
+    if (!prepareAndroidAcceptance(application, &acceptancePeer)) return 2;
+#endif
     MessengerController messenger;
     traceStartup("controller-ready");
     QQmlApplicationEngine engine;
@@ -54,6 +59,9 @@ int main(int argc, char* argv[])
     traceStartup("qml-loaded");
     if (engine.rootObjects().isEmpty())
         return 1;
+#if defined(Q_OS_ANDROID) && !defined(QT_NO_DEBUG)
+    startAndroidAcceptance(application, messenger, acceptancePeer);
+#endif
     bool validTimeout = false;
     const auto exitAfterMs = qEnvironmentVariableIntValue("P2P_MESSENGER_EXIT_AFTER_MS", &validTimeout);
     if (validTimeout && exitAfterMs > 0)

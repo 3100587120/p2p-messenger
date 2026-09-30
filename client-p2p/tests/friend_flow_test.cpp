@@ -49,7 +49,9 @@ int main(int argc, char** argv)
         }
     });
     timer.start(500);
-    QTimer::singleShot(180000, &app, &QCoreApplication::quit);
+    const int configuredTimeout = qEnvironmentVariableIntValue("P2P_MESSENGER_TEST_TIMEOUT_MS");
+    QTimer::singleShot(configuredTimeout > 0 ? qMin(configuredTimeout, 900000) : 180000,
+                       &app, &QCoreApplication::quit);
     app.exec();
     const bool passed = accepted && sentText && receivedText;
     std::cout << "CONTROLLER_FRIEND_FLOW=" << (passed ? "PASS" : "FAIL") << std::endl;

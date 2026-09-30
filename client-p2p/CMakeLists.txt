@@ -28,6 +28,7 @@ qt_standard_project_setup(REQUIRES 6.5)
 
 qt_add_executable(P2PMessenger
     src/main.cpp
+    src/android_acceptance.cpp src/android_acceptance.h
     src/messenger_controller.cpp
     src/messenger_controller.h
     src/daemon_bridge.cpp
