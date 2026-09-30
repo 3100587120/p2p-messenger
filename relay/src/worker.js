@@ -49,7 +49,7 @@ export class Router {
         .then(value=>socket.send(JSON.stringify({op:'admin_directory_result',id:frame.id,...value})))
         .catch(()=>socket.send(JSON.stringify({op:'admin_directory_denied',id:frame.id})));
     }
-    if (['register','lookup','login_info','login'].includes(frame?.op)) {
+    if (['register','lookup','login_info','login','contacts_get','contacts_put'].includes(frame?.op)) {
       if (!packetId.test(frame.id)) return;
       if (!this.directory) { socket.send(JSON.stringify({ op: 'directory_error', id: frame.id, reason: 'directory_unavailable' })); return; }
       const attachment = socket.deserializeAttachment();
@@ -62,12 +62,15 @@ export class Router {
       const action = frame.op === 'register' ? this.directory.register(sender, frame.code, frame.ownerProof, frame.auth)
         : frame.op === 'login_info' ? this.directory.loginInfo(frame.uid)
         : frame.op === 'login' ? this.directory.login(frame.uid,frame.token)
+        : frame.op === 'contacts_get' ? this.directory.contacts(frame.uid,frame.token)
+        : frame.op === 'contacts_put' ? this.directory.contacts(frame.uid,frame.token,frame.snapshot)
         : this.directory.lookup(frame.uid);
       return action.then(async value => {
         if (value?.error) { socket.send(JSON.stringify({op:'directory_error',id:frame.id,reason:value.error})); return; }
         socket.send(JSON.stringify(frame.op === 'register' ? {op:'registered',id:frame.id,uid:value}
           : frame.op === 'login_info' ? {op:'login_info_result',id:frame.id,uid:frame.uid,...value}
           : frame.op === 'login' ? {op:'login_result',id:frame.id,...value}
+          : frame.op.startsWith('contacts_') ? {op:frame.op+'_result',id:frame.id,snapshot:frame.op==='contacts_get'?value:null}
           : {op:'lookup_result',id:frame.id,uid:frame.uid,code:value || '',name:await this.directory.profile(frame.uid)}));
       })
         .catch(() => socket.send(JSON.stringify({ op: 'directory_error', id: frame.id, reason: 'directory_failed' })));

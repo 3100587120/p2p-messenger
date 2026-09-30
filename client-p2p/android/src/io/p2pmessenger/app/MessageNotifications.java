@@ -33,7 +33,7 @@ public final class MessageNotifications {
             PendingIntent click = PendingIntent.getActivity(context,0,launch,PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
             int icon = context.getResources().getIdentifier("ic_notification","drawable",context.getPackageName());
             Notification.Builder builder = Build.VERSION.SDK_INT >= 26 ? new Notification.Builder(context,CHANNEL) : new Notification.Builder(context);
-            builder.setSmallIcon(icon).setContentTitle(title).setContentText(body).setContentIntent(click).setAutoCancel(true).setCategory(Notification.CATEGORY_MESSAGE).setPriority(Notification.PRIORITY_HIGH).setDefaults(Notification.DEFAULT_ALL);
+            builder.setSmallIcon(icon).setContentTitle(title).setContentText(body).setStyle(new Notification.BigTextStyle().bigText(body)).setVisibility(Notification.VISIBILITY_PRIVATE).setContentIntent(click).setAutoCancel(true).setCategory(Notification.CATEGORY_MESSAGE).setPriority(Notification.PRIORITY_HIGH).setDefaults(Notification.DEFAULT_ALL);
             manager.notify(title.hashCode(),builder.build());
         } catch (Exception ignored) { /* Notification denial must never crash chat. */ }
     }

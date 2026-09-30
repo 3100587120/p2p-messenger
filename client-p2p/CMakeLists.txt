@@ -45,6 +45,7 @@ qt_add_executable(P2PMessenger
     src/gateway_mapper.cpp
     src/gateway_mapper.h
     src/local_vault.cpp
+    src/file_stream.cpp src/file_stream.h
     src/local_vault.h
     src/relay_crypto.cpp
     src/relay_crypto.h
@@ -113,13 +114,15 @@ if(P2P_MESSENGER_WITH_DAEMON)
         set_property(TARGET P2PMessenger APPEND PROPERTY QT_ANDROID_EXTRA_LIBS
             "${P2P_MESSENGER_DAEMON_LIBRARY}")
         target_link_libraries(P2PMessenger PRIVATE
-            "${_daemon_root}/contrib/aarch64-linux-android/lib/libcrypto.a")
+            "${_daemon_root}/contrib/aarch64-linux-android/lib/libcrypto.a"
+            "${_daemon_root}/contrib/aarch64-linux-android/lib/libspeexdsp.a")
     endif()
     if(WIN32)
         get_filename_component(_daemon_root "${P2P_MESSENGER_DAEMON_INCLUDE_DIR}" DIRECTORY)
         set(_contrib "${_daemon_root}/contrib")
         target_include_directories(P2PMessenger PRIVATE
             "${_contrib}/msvc/include"
+            "${_contrib}/build/speexdsp/include"
             "${_contrib}/build/openssl/include")
         target_link_directories(P2PMessenger PRIVATE "${_contrib}/msvc/lib/x64")
         target_link_libraries(P2PMessenger PRIVATE
@@ -210,6 +213,7 @@ if(P2P_MESSENGER_BUILD_RELAY_TESTS AND WIN32)
             src/voice_engine.cpp src/voice_engine.h
             src/relay_crypto.cpp src/relay_crypto.h
             src/local_vault.cpp src/local_vault.h)
+        list(APPEND _friend_flow_sources src/file_stream.cpp src/file_stream.h)
         foreach(_test IN ITEMS P2PMessengerFriendFlowTest P2PMessengerFriendFlowWithoutDaemonTest)
             add_executable(${_test} ${_friend_flow_sources})
             foreach(_property IN ITEMS INCLUDE_DIRECTORIES COMPILE_DEFINITIONS LINK_DIRECTORIES LINK_LIBRARIES LINK_OPTIONS)

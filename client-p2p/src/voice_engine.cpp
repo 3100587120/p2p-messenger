@@ -8,6 +8,10 @@
 #include <QPermissions>
 #include <QPointer>
 #include <QGuiApplication>
+#include <QtEndian>
+#ifdef P2P_MESSENGER_WITH_DAEMON
+#include <speex/speex_echo.h>
+#endif
 
 namespace {
 QAudioFormat pcmFormat() {
@@ -21,10 +25,10 @@ VoiceEngine::VoiceEngine(QObject* parent) : QObject(parent) {
     pump_.setInterval(20);
     connect(&pump_, &QTimer::timeout, this, [this] {
         if (!output_ || !playbackDevice_) return;
-        const auto count = qMin<qsizetype>(pendingPlayback_.size(), output_->bytesFree());
+        const auto count = qMin<qsizetype>(qMin<qsizetype>(pendingPlayback_.size(), output_->bytesFree()),playbackLive_?640:1920000);
         if (count <= 0) return;
         const auto written = playbackDevice_->write(pendingPlayback_.constData(), count);
-        if (written > 0) pendingPlayback_.remove(0, written);
+        if (written > 0) {if(playbackLive_)referencePlayback(pendingPlayback_.left(written));pendingPlayback_.remove(0, written);}
     });
     recordDeadline_.setSingleShot(true);
     connect(&recordDeadline_, &QTimer::timeout, this, [this] { stopCapture(true); });
@@ -53,6 +57,7 @@ void VoiceEngine::capture(bool live) {
         emit errorOccurred(tr("没有可用的麦克风，或设备不支持 16 kHz 单声道录音")); return;
     }
     live_ = live; recorded_.clear(); frame_.clear();
+    if(live)startEcho();else stopEcho();
     input_ = new QAudioSource(device, pcmFormat(), this);
     input_->setBufferSize(6400);
     auto* source = input_->start();
@@ -68,7 +73,8 @@ void VoiceEngine::capture(bool live) {
         });
     });
     connect(source, &QIODevice::readyRead, this, [this, source] {
-        const auto bytes = source->readAll();
+        const auto raw = source->readAll();
+        const auto bytes = live_ ? cancelEcho(raw) : raw;
         if (live_) {
             frame_ += bytes;
             while (frame_.size() >= 3200) {
@@ -88,6 +94,7 @@ void VoiceEngine::stopCapture(bool keepRecording) {
     ++captureGeneration_;
     permissionPending_ = false;
     recordDeadline_.stop();
+    stopEcho();
     if (input_) { auto* old = input_; input_ = nullptr; old->disconnect(this); old->stop(); old->deleteLater(); }
     frame_.clear();
     // first(n) requires n <= size(). Short/empty recordings used to perform
@@ -127,6 +134,47 @@ bool VoiceEngine::play(const QByteArray& pcm, bool live) {
         emit playbackChanged();
     }
     return true;
+}
+void VoiceEngine::startEcho() {
+    stopEcho();
+#ifdef P2P_MESSENGER_WITH_DAEMON
+    auto* state=speex_echo_state_init(320,3200); // 20 ms frames, 200 ms tail.
+    if(state){int rate=16000;speex_echo_ctl(state,SPEEX_ECHO_SET_SAMPLING_RATE,&rate);echo_=state;}
+#endif
+}
+void VoiceEngine::stopEcho() {
+#ifdef P2P_MESSENGER_WITH_DAEMON
+    if(echo_)speex_echo_state_destroy(static_cast<SpeexEchoState*>(echo_));
+#endif
+    echo_=nullptr;echoRecorded_.clear();echoPlayback_.clear();
+}
+void VoiceEngine::referencePlayback(const QByteArray& pcm) {
+#ifdef P2P_MESSENGER_WITH_DAEMON
+    if(!echo_)return;echoPlayback_+=pcm;
+    while(echoPlayback_.size()>=640){spx_int16_t reference[320];for(int i=0;i<320;++i)reference[i]=qFromLittleEndian<qint16>(echoPlayback_.constData()+i*2);
+        speex_echo_playback(static_cast<SpeexEchoState*>(echo_),reference);echoPlayback_.remove(0,640);
+    }
+#else
+    Q_UNUSED(pcm);
+#endif
+}
+QByteArray VoiceEngine::cancelEcho(const QByteArray& pcm) {
+#ifdef P2P_MESSENGER_WITH_DAEMON
+    if(!echo_)return pcm;echoRecorded_+=pcm;QByteArray result;
+    while(echoRecorded_.size()>=640){spx_int16_t input[320],output[320];for(int i=0;i<320;++i)input[i]=qFromLittleEndian<qint16>(echoRecorded_.constData()+i*2);
+        speex_echo_capture(static_cast<SpeexEchoState*>(echo_),input,output);const auto at=result.size();result.resize(at+640);for(int i=0;i<320;++i)qToLittleEndian<qint16>(output[i],result.data()+at+i*2);echoRecorded_.remove(0,640);
+    }return result;
+#else
+    return pcm;
+#endif
+}
+QByteArray VoiceEngine::mixFrames(const QList<QByteArray>& frames) {
+    if(frames.isEmpty() || frames.size()>5)return {};
+    for(const auto& frame:frames)if(frame.size()!=3200)return {};
+    QByteArray result(3200,Qt::Uninitialized);
+    for(int i=0;i<1600;++i){int sum=0;for(const auto& frame:frames)sum+=qFromLittleEndian<qint16>(frame.constData()+i*2);
+        qToLittleEndian<qint16>(qBound(-32768,sum,32767),result.data()+i*2);
+    }return result;
 }
 void VoiceEngine::stopPlayback() {
     pump_.stop(); playbackDevice_ = nullptr; pendingPlayback_.clear();

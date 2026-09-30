@@ -12,6 +12,7 @@ public:
 
     bool isReady() const;
     QString error() const;
+    QString rootPath() const {return rootPath_;}
     QVariantList loadConversation(const QString& conversationId) const;
     bool hasConversation(const QString& conversationId) const;
     bool saveConversation(const QString& conversationId, const QVariantList& messages);

@@ -141,15 +141,26 @@ QString RelayCrypto::loginToken(const QString& password, const QString& salt, in
     const auto token=QString::fromLatin1(b64(keys.first(32))); keys.fill('\0'); return token;
 }
 bool RelayCrypto::restoreLoginRecord(LocalVault& vault, const QString& password, const QJsonObject& record) {
+    auto secret = decryptLoginIdentity(password, record);
+    const bool saved = installLoginIdentity(vault, secret, record.value("code").toString());
+    secret.fill('\0');
+    return saved;
+}
+QByteArray RelayCrypto::decryptLoginIdentity(const QString& password, const QJsonObject& record) {
     auto keys = passwordKeys(password,record.value("salt").toString(),record.value("iterations").toInt());
     const auto expected = publicKeyFromCode(record.value("code").toString());
-    if (keys.size()!=64 || expected.size()!=32 || record.value("backup").toString().size()>8192) return false;
+    if (keys.size()!=64 || expected.size()!=32 || record.value("backup").toString().size()>8192) { keys.fill('\0'); return {}; }
     RelayCrypto protection; protection.privateKey_=keys.last(32); protection.publicKey_=publicFromPrivate(protection.privateKey_); keys.fill('\0');
     bool ok=false; const auto plain=protection.open(protection.identityId(),"account-"+idForPublicKey(expected),record.value("backup").toString().toLatin1(),&ok);
     protection.privateKey_.fill('\0');
     auto secret=unb64(plain.value("private").toString());
-    if (!ok || publicFromPrivate(secret)!=expected) { secret.fill('\0'); return false; }
-    const bool saved=vault.saveConversation(identitySlot,{QVariantMap {{"private",QString::fromLatin1(b64(secret))}}}); secret.fill('\0');
+    if (!ok || publicFromPrivate(secret)!=expected) { secret.fill('\0'); return {}; }
+    return secret;
+}
+bool RelayCrypto::installLoginIdentity(LocalVault& vault, const QByteArray& secret, const QString& code) {
+    const auto expected = publicKeyFromCode(code);
+    if (expected.size()!=32 || publicFromPrivate(secret)!=expected) return false;
+    const bool saved=vault.saveConversation(identitySlot,{QVariantMap {{"private",QString::fromLatin1(b64(secret))}}});
     return saved && loadOrCreate(vault);
 }
 

@@ -16,7 +16,9 @@ public:
     void capture(bool live);
     void stopCapture(bool keepRecording);
     bool play(const QByteArray& pcm, bool live = false);
+    static QByteArray mixFrames(const QList<QByteArray>& frames);
     void stopPlayback();
+    bool echoCancellationEnabled() const {return echo_!=nullptr;}
     bool permissionPending() const { return permissionPending_; }
     bool playing() const {return output_!=nullptr;}
 signals:
@@ -36,4 +38,10 @@ private:
     bool playbackLive_ {false};
     bool permissionPending_ {false};
     quint64 captureGeneration_ {0};
+    void* echo_ {nullptr};
+    QByteArray echoRecorded_,echoPlayback_;
+    void startEcho();
+    void stopEcho();
+    QByteArray cancelEcho(const QByteArray& pcm);
+    void referencePlayback(const QByteArray& pcm);
 };

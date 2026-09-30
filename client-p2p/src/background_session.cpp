@@ -70,7 +70,7 @@ int runMessageService(int argc,char** argv) {
             if(status.open(QIODevice::WriteOnly)){status.write(QJsonDocument(QJsonObject{{"at",now},{"ownsSession",owned},{"connected",controller && controller->networkStatus().contains(QStringLiteral("自检通过"))}}).toJson(QJsonDocument::Compact));status.commit();}
         }
         if(BackgroundSession::foregroundRequested(base)) {
-            if(owned){controller.reset();currentRoot.clear();lock.unlock();owned=false;} return;
+            if(owned){if(controller)controller->suspendForBackground();controller.reset();currentRoot.clear();lock.unlock();owned=false;} return;
         }
         if(!owned){if(!lock.tryLock(0))return;owned=true;}
         qputenv("P2P_MESSENGER_DATA_ROOT",base.toUtf8());
@@ -79,10 +79,9 @@ int runMessageService(int argc,char** argv) {
         controller.reset(); currentRoot=root; qputenv("P2P_MESSENGER_DATA_ROOT",root.toUtf8()); qputenv("P2P_MESSENGER_ACCOUNT_PROFILE","1");
         controller=std::make_unique<MessengerController>();
         QObject::connect(controller.get(),&MessengerController::incomingNotice,&notifications,&NotificationService::show);
-        // Background mode never opens a microphone or attempts to answer a call.
-        QObject::connect(controller.get(),&MessengerController::voiceChanged,&app,[&] {
-            if(controller && controller->callState()=="ringing") { notifications.show("未接语音通话",controller->callPeerName()+"：请打开聊天后重新呼叫");controller->endCall(); }
-        });
+        if(controller->callState()=="ringing")notifications.show("语音来电",controller->callPeerName()+" 邀请你通话，打开应用接听");
+        // Ring without opening the microphone; tapping the notification
+        // transfers the encrypted offer to the foreground controller.
     });
     timer.start(); return app.exec();
 }

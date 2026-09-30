@@ -29,7 +29,7 @@ export class UidDirectory {
         if (credentials) {
           const old = await tx.get('auth:' + existing);
           if (old && old.tokenHash !== credentials.tokenHash) throw new Error('account_already_registered');
-          await tx.put('auth:' + existing,credentials);
+          await tx.put('auth:' + existing,{...credentials,contacts:old?.contacts});
         }
         return existing;
       }
@@ -89,6 +89,19 @@ export class UidDirectory {
       for (const [key] of accounts) await tx.delete(key);
       await tx.put('generation',nonce);
       return {accounts:0,generation:nonce};
+    });
+  }
+  async contacts(uid, token, snapshot = undefined) {
+    if (!/^[1-9][0-9]{0,15}$/.test(uid) || !/^[A-Za-z0-9_-]{43}$/.test(token || '')) throw new Error('invalid_login');
+    if (snapshot !== undefined && (!snapshot || !/^[0-9a-f-]{36}$/.test(snapshot.id || '') || typeof snapshot.envelope !== 'string' || snapshot.envelope.length > 56000 || snapshot.envelope.length < 80)) throw new Error('invalid_backup');
+    const raw=Uint8Array.from(atob(token.replace(/-/g,'+').replace(/_/g,'/')+'='),c=>c.charCodeAt(0));
+    const hash=[...new Uint8Array(await crypto.subtle.digest('SHA-256',raw))].map(v=>v.toString(16).padStart(2,'0')).join('');
+    return this.storage.transaction(async tx => {
+      const record=await tx.get('auth:'+uid);let difference=0;const expected=record?.tokenHash || '0'.repeat(64);
+      for(let i=0;i<64;i++)difference|=expected.charCodeAt(i)^hash.charCodeAt(i);
+      if(!record || difference)throw new Error('invalid_login');
+      if(snapshot !== undefined){record.contacts={id:snapshot.id,envelope:snapshot.envelope};await tx.put('auth:'+uid,record);}
+      return record.contacts || null;
     });
   }
 }

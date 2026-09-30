@@ -3,6 +3,7 @@
 #include <QTemporaryDir>
 #include <QDir>
 #include <QTimer>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
 #include <QCryptographicHash>
@@ -23,10 +24,57 @@
 #include "account_manager.h"
 #include "voice_engine.h"
 #include "background_session.h"
+#include <QtEndian>
+
+class CallProtocolRegression {
+public:
+    static int run(const QString& root) {
+        LocalVault vault(root),peerVault(QDir(root).filePath("peer")),otherVault(QDir(root).filePath("other"));RelayCrypto self,peer,other;
+        if(!self.loadOrCreate(vault)||!peer.loadOrCreate(peerVault)||!other.loadOrCreate(otherVault))return 22;
+        const QVariantList contacts{QVariantMap{{"id","private"},{"name","Peer"},{"uri",peer.identityId()},{"relayPublic",peer.inviteCode()},{"transport","relay"},{"ready",true}},QVariantMap{{"id","group"},{"name","Group"},{"transport","relay"},{"ready",true},{"group",true},{"groupId","call-group"},{"members",QStringList{self.inviteCode(),peer.inviteCode(),other.inviteCode()}}}};
+        if(!vault.saveConversation("__profile",{QVariantMap{{"contacts",contacts},{"network",QVariantMap{{"assistedConnection",true},{"relayEndpoint","ws://localhost:1"}}}}}))return 22;
+        const auto peerKey=RelayCrypto::publicKeyFromCode(peer.inviteCode());
+        QJsonObject offer{{"type","call_offer"},{"callId",QUuid::createUuid().toString(QUuid::WithoutBraces)},{"expires",QDateTime::currentSecsSinceEpoch()+45}};
+        {
+            MessengerController c;c.receiveCall(peer.identityId(),peerKey,offer);
+            if(c.callState()!="ringing" || vault.loadConversation("__incoming_call").isEmpty())return 22;
+            c.suspendForBackground();if(c.callState()!="idle")return 22;
+        }
+        {
+            MessengerController c;if(c.callState()!="ringing")return 22;c.endCall();if(!vault.loadConversation("__incoming_call").isEmpty())return 22;
+            offer.insert("groupId","call-group");offer.insert("callId",QUuid::createUuid().toString(QUuid::WithoutBraces));
+            c.receiveCall(peer.identityId(),peerKey,offer);if(c.callState()!="ringing" || c.callParticipants_.size()!=2)return 22;
+            c.callState_="active";c.callStartedAt_=QDateTime::currentMSecsSinceEpoch()-65000;
+            c.callParticipants_[peer.identityId()].accepted=true;c.callParticipants_[other.identityId()].accepted=true;
+            if(c.callParticipants()!=3 || c.callDuration()<65)return 22;
+            auto audio=QJsonObject{{"type","call_audio"},{"groupId","call-group"},{"callId",c.callId_},{"seq",1},{"data",QString::fromLatin1(QByteArray(3200,'\0').toBase64())}};
+            c.receiveCall("not-a-member",peerKey,audio);if(!c.callParticipants_[peer.identityId()].frames.isEmpty())return 22;
+            c.receiveCall(peer.identityId(),peerKey,audio);c.receiveCall(peer.identityId(),peerKey,audio);if(c.callParticipants_[peer.identityId()].frames.size()!=1)return 22;
+            for(int i=2;i<10;++i){audio.insert("seq",i);c.receiveCall(peer.identityId(),peerKey,audio);}if(c.callParticipants_[peer.identityId()].frames.size()!=3)return 22;
+            c.endCall();if(c.callState()!="idle" || c.callParticipants()!=0)return 22;
+            const auto history=vault.loadConversation("group");if(history.isEmpty() || !history.last().toMap().value("body").toString().contains("1:05"))return 22;
+        }
+        QByteArray a(3200,Qt::Uninitialized),b(3200,Qt::Uninitialized);for(int i=0;i<1600;++i){qToLittleEndian<qint16>(30000,a.data()+i*2);qToLittleEndian<qint16>(10000,b.data()+i*2);}
+        const auto mixed=VoiceEngine::mixFrames({a,b});if(mixed.size()!=3200 || qFromLittleEndian<qint16>(mixed.constData())!=32767 || !VoiceEngine::mixFrames({a,QByteArray(5,'a')}).isEmpty())return 22;
+        std::cout<<"RINGING_SERVICE_HANDOVER_GROUP_MEMBERSHIP_SEQUENCE_QUEUE_BOUNDS_MIXER_DURATION_RECORD=PASS"<<std::endl;return 0;
+    }
+};
 #include "screenshot_service.h"
 
 class VoiceEngineRegression {
 public:
+    static int echoRun() {
+        VoiceEngine voice;voice.startEcho();if(!voice.echoCancellationEnabled())return 23;
+        QList<QByteArray> history;quint32 seed=12345;double inputEnergy=0,outputEnergy=0;
+        for(int frame=0;frame<600;++frame){QByteArray played(640,Qt::Uninitialized);for(int i=0;i<320;++i){seed=1664525*seed+1013904223;qToLittleEndian<qint16>(int((seed>>16)%10000)-5000,played.data()+2*i);}
+            history.append(played);voice.referencePlayback(played);QByteArray captured(640,'\0');
+            if(history.size()>2){const auto delayed=history.takeFirst();for(int i=0;i<320;++i)qToLittleEndian<qint16>(qFromLittleEndian<qint16>(delayed.constData()+i*2)/2,captured.data()+i*2);}
+            const auto clean=voice.cancelEcho(captured);if(clean.size()!=640)return 23;
+            if(frame>500)for(int i=0;i<320;++i){const double before=qFromLittleEndian<qint16>(captured.constData()+i*2),after=qFromLittleEndian<qint16>(clean.constData()+i*2);inputEnergy+=before*before;outputEnergy+=after*after;}
+        }
+        voice.stopCapture(false);if(voice.echoCancellationEnabled() || inputEnergy<=0 || outputEnergy/inputEnergy>=0.8)return 23;
+        std::cout<<"SPEEX_SYNTHETIC_DELAYED_ECHO_RESIDUAL_RATIO="<<outputEnergy/inputEnergy<<" PASS"<<std::endl;return 0;
+    }
     static int run() {
         VoiceEngine voice; QByteArray received; int ready=0;
         QObject::connect(&voice,&VoiceEngine::recordingReady,&voice,[&](const QByteArray& data){received=data;++ready;});
@@ -463,6 +511,7 @@ static int publicHeadlessMediaRegression(QCoreApplication& app,const QString& ro
     const auto photo=QDir(root).filePath("photo.png"),file=QDir(root).filePath("file.txt");
     QImage image(480,320,QImage::Format_RGB32);image.fill(Qt::blue);if(!image.save(photo))return 18;
     QFile fixture(file);if(!fixture.open(QIODevice::WriteOnly))return 18;fixture.write("public-relay-file-fixture");fixture.close();
+    const auto largeFile=QDir(root).filePath("stream-public.bin");QFile largeFixture(largeFile);if(!largeFixture.open(QIODevice::WriteOnly))return 18;largeFixture.write(QByteArray(3*1024*1024+17,'l'));largeFixture.close();
     bool sent=false,pass=false;int notifications=0;
     QObject::connect(&bob,&MessengerController::incomingNotice,&app,[&](const QString&,const QString&){++notifications;});
     const QByteArray pcm(32000,'\0');
@@ -470,7 +519,7 @@ static int publicHeadlessMediaRegression(QCoreApplication& app,const QString& ro
     QObject::connect(&timer,&QTimer::timeout,&app,[&]{
         if(!sent && alice.networkStatus().contains(QStringLiteral("自检通过")) && bob.networkStatus().contains(QStringLiteral("自检通过"))) {
             sent=true;
-            if(!alice.sendMessage("public-headless-test") || !alice.sendPhoto(photo) || !alice.sendSticker(photo) || !alice.queueFile(file)){app.quit();return;}
+            if(!alice.sendMessage("public-headless-test") || !alice.sendPhoto(photo) || !alice.sendSticker(photo) || !alice.queueFile(file) || !alice.queueFile(largeFile)){app.quit();return;}
             alice.selectContact("public-group");if(!alice.sendMessage("public-group-text") || !alice.sendPhoto(photo) || !alice.queueFile(file)){app.quit();return;}alice.selectContact("peer");
             auto* relay=alice.findChild<RelayClient*>();if(!relay){app.quit();return;}
             QList<QJsonObject> packets;
@@ -479,7 +528,7 @@ static int publicHeadlessMediaRegression(QCoreApplication& app,const QString& ro
             for(int i=0;i<3;++i)packets.append(QJsonObject {{"type","file_chunk"},{"mediaKind","voice"},{"fileId",id},{"name","voice.pcm"},{"size",pcm.size()},{"count",3},{"index",i},{"sha256",hash},{"data",QString::fromLatin1(pcm.mid(i*12288,12288).toBase64(QByteArray::Base64UrlEncoding))}});
             if(relay->sendBatch(RelayClient::publicKeyFromCode(bobKey.inviteCode()),packets).size()!=3){app.quit();return;}
         }
-        bool text=false,photoReceived=false,sticker=false,voice=false,fileReceived=false;
+        bool text=false,photoReceived=false,sticker=false,voice=false,fileReceived=false,streamReceived=false;
         for(const auto& value:bob.messages()) {
             const auto row=value.toMap();if(row.value("outgoing").toBool())continue;
             const auto bytes=QByteArray::fromBase64(row.value("fileData").toString().toLatin1());
@@ -488,14 +537,17 @@ static int publicHeadlessMediaRegression(QCoreApplication& app,const QString& ro
             sticker|=row.value("kind")=="sticker" && !QImage::fromData(bytes).isNull();
             voice|=row.value("kind")=="voice" && bytes==pcm;
             fileReceived|=row.value("kind")=="file-offer" && bytes=="public-relay-file-fixture";
+            streamReceived|=row.value("name")=="stream-public.bin" && !row.value("streamTransfer").toString().isEmpty();
         }
         bool groupText=false,groupPhoto=false,groupFile=false;
         for(const auto& value:bobVault.loadConversation("public-group")){const auto row=value.toMap();groupText|=row.value("body").toString().contains("public-group-text");groupPhoto|=row.value("kind")=="photo";groupFile|=row.value("kind")=="file-offer";}
-        if(text&&photoReceived&&sticker&&voice&&fileReceived&&groupText&&groupPhoto&&groupFile&&notifications>=8){bob.selectContact("public-group");const auto sender=bob.messageSenderDetails(0);pass=sender.value("uri")==aliceKey.identityId() && sender.value("name")=="Sender";app.quit();}
+        if(text&&photoReceived&&sticker&&voice&&fileReceived&&streamReceived&&groupText&&groupPhoto&&groupFile&&notifications>=9){bob.selectContact("public-group");const auto sender=bob.messageSenderDetails(0);pass=sender.value("uri")==aliceKey.identityId() && sender.value("name")=="Sender";app.quit();}
     });
-    timer.start(250);QTimer::singleShot(60000,&app,&QCoreApplication::quit);app.exec();
+    timer.start(250);QTimer::singleShot(300000,&app,&QCoreApplication::quit);app.exec();
     std::cout<<"PUBLIC_WSS_QCORE_NO_WINDOW_PRIVATE_GROUP_MEMBER_PROFILE_MEDIA_FILES_AND_NOTICES="<<(pass?"PASS":"FAIL")<<std::endl;
-    if(!pass)std::cerr<<alice.lastError().toStdString()<<" / "<<bob.lastError().toStdString()<<std::endl;
+    if(!pass){std::cerr<<alice.lastError().toStdString()<<" / "<<bob.lastError().toStdString()<<" notices="<<notifications<<" bob_messages="<<bob.messages().size()<<std::endl;
+        const auto queued=aliceVault.loadConversation("__stream_outgoing");if(!queued.isEmpty())for(const auto& value:queued.first().toMap()){const auto row=value.toMap();std::cerr<<"stream_next="<<row.value("next").toLongLong()<<" pending="<<row.value("pending").toStringList().size()<<std::endl;}
+    }
     return pass?0:18;
 }
 
@@ -508,8 +560,28 @@ static int interactionRegression(const QString& root) {
         QVariantMap{{"id","group"},{"name","Group"},{"group",true},{"groupId","qa-group"},{"members",QStringList{self.inviteCode(),peer.inviteCode()}},{"transport","relay"},{"ready",true}}}},{"network",QVariantMap{{"assistedConnection",true},{"relayEndpoint","ws://localhost:1"}}}}}))return 21;
     MessengerController c;auto* relay=c.findChild<RelayClient*>();if(!relay)return 21;
     c.selectContact("private");if(c.activeIsGroup())return 21;
+    int notices=0;QObject::connect(&c,&MessengerController::incomingNotice,&c,[&](const QString&,const QString&){++notices;});
+    c.setThreadVisible(false);relay->packetReceived(peer.identityId(),key,QJsonObject{{"type","text"},{"body","latest message"}});
+    if(c.activeContactDetails().value("unread").toInt()!=1 || c.activeContactDetails().value("lastMessage")!="latest message" || notices!=1)return 21;
+    if(!c.setContactMuted(true))return 21;
+    relay->packetReceived(peer.identityId(),key,QJsonObject{{"type","text"},{"body","muted message"}});
+    if(c.activeContactDetails().value("unread").toInt()!=2 || notices!=1 || !vault.loadConversation("__profile").first().toMap().value("contacts").toList().first().toMap().value("muted").toBool())return 21;
     relay->packetReceived(peer.identityId(),key,QJsonObject{{"type","friend_request"}});if(!c.pendingRequests().isEmpty())return 21;
+    const auto retractId=QUuid::createUuid().toString(QUuid::WithoutBraces);
+    relay->packetReceived(peer.identityId(),key,QJsonObject{{"type","text"},{"body","withdraw me"},{"messageId",retractId}});
+    relay->packetReceived(QString(64,'0'),key,QJsonObject{{"type","withdraw"},{"messageId",retractId}});
+    if(c.messages().last().toMap().value("kind")=="withdrawn")return 21;
+    relay->packetReceived(peer.identityId(),key,QJsonObject{{"type","withdraw"},{"messageId",retractId}});
+    if(c.messages().last().toMap().value("kind")!="withdrawn")return 21;
+    if(!c.sendMessage("outgoing withdrawal") || !c.withdrawMessage(c.messages().size()-1) || c.messages().last().toMap().value("kind")!="withdrawn")return 21;
+    if(c.withdrawMessage(c.messages().size()-1))return 21;
     c.selectContact("group");if(!c.activeIsGroup() || !c.renameGroup("New group"))return 21;
+    if(!c.ownsGroup() || !c.canManageGroup() || !c.setGroupAnnouncement("Owner announcement"))return 21;
+    const auto announcement=c.activeContactDetails().value("announcement");
+    relay->packetReceived(peer.identityId(),key,QJsonObject{{"type","group_announcement"},{"groupId","qa-group"},{"text","Unauthorized"},{"revision",QDateTime::currentMSecsSinceEpoch()+1}});
+    if(c.activeContactDetails().value("announcement")!=announcement || !c.setGroupAdministrator(peer.identityId(),true))return 21;
+    relay->packetReceived(peer.identityId(),key,QJsonObject{{"type","group_announcement"},{"groupId","qa-group"},{"text","Admin announcement"},{"revision",QDateTime::currentMSecsSinceEpoch()+2}});
+    if(c.activeContactDetails().value("announcement")!="Admin announcement" || !c.setGroupAdministrator(peer.identityId(),false))return 21;
     QImage image(64,64,QImage::Format_RGB32);image.fill(Qt::blue);const auto avatarFile=QDir(root).filePath("group.png");if(!image.save(avatarFile)||!c.setGroupAvatar(avatarFile))return 21;
     QByteArray raw;QBuffer imageBuffer(&raw);imageBuffer.open(QIODevice::WriteOnly);image.save(&imageBuffer,"PNG");
     relay->packetReceived(peer.identityId(),key,QJsonObject{{"type","group_member_profile"},{"groupId","qa-group"},{"name","Member profile"},{"avatar",QString::fromLatin1(raw.toBase64())}});
@@ -529,6 +601,22 @@ static int interactionRegression(const QString& root) {
     std::cout<<"PRIVATE_GROUP_CLASSIFICATION_MEMBER_AVATAR_DETAILS_FILES_FORWARD_RECEIPTS_DELETE_CANCEL=PASS"<<std::endl;return 0;
 }
 
+static int streamFileRegression(const QString& root){
+    LocalVault vault(root);RelayClient relay(vault);FileStream files(vault,relay);const QString sender(64,'a'),contact="stream-test",id=QUuid::createUuid().toString(QUuid::WithoutBraces);
+    const QByteArray payload(3*1024*1024+17,'s');const qint64 chunk=16384,count=(payload.size()+chunk-1)/chunk;QVariantMap received;int ready=0;
+    QObject::connect(&files,&FileStream::fileReady,&files,[&](const QString&,const QVariantMap& row){received=row;++ready;});
+    const auto frame=[&](qint64 index){return QJsonObject{{"type","stream_chunk"},{"fileId",id},{"name","large.bin"},{"size",qint64(payload.size())},{"count",count},{"index",index},{"data",QString::fromLatin1(payload.mid(index*chunk,chunk).toBase64())}};};
+    if(!files.receive(sender,contact,frame(1)) || !files.receive(sender,contact,frame(1)) || !files.receive(sender,contact,frame(0)))return 24;
+    for(qint64 i=2;i<count;++i)if(!files.receive(sender,contact,frame(i)))return 24;
+    if(ready!=1 || received.value("fileData").toString().size()>0 || received.value("streamTransfer").toString().isEmpty())return 24;
+    auto bad=frame(0);bad.insert("size",payload.size()+1);if(files.receive(sender,contact,bad))return 24;
+    const auto destination=QDir(root).filePath("stream-export.bin");bool saved=false;QEventLoop loop;
+    QObject::connect(&files,&FileStream::fileSaved,&loop,[&](const QString&){saved=true;loop.quit();});
+    if(!files.exportFile(received.value("streamTransfer").toString(),destination))return 24;
+    QTimer::singleShot(30000,&loop,&QEventLoop::quit);loop.exec();QFile result(destination);if(!saved || !result.open(QIODevice::ReadOnly) || result.readAll()!=payload)return 24;
+    if(!files.cancelIncoming(sender,contact,id) || !files.receive(sender,contact,frame(0)) || ready!=1)return 24;
+    std::cout<<"STREAM_FILE_OVER_2MB_OUT_OF_ORDER_DUPLICATE_ENCRYPTED_CHUNKS_ASYNC_EXPORT_CANCEL=PASS"<<std::endl;return 0;
+}
 int main(int argc, char** argv)
 {
     for(int i=1;i<argc;++i)if(QString::fromLocal8Bit(argv[i])=="--public-headless-media-e2e") {
@@ -540,6 +628,8 @@ int main(int argc, char** argv)
     QTemporaryDir root(QDir::tempPath() + "/friend-flow-XXXXXX");
     if (!root.isValid()) return 2;
     qputenv("P2P_MESSENGER_DATA_ROOT", root.path().toUtf8());
+    if(app.arguments().contains("--stream-file-regression"))return streamFileRegression(root.path());
+    if(app.arguments().contains("--call-protocol-regression"))return CallProtocolRegression::run(root.path());
     if(app.arguments().contains("--screenshot-region-regression")) {
         QImage desktop(100,80,QImage::Format_RGB32);desktop.fill(Qt::blue);
         const auto image=ScreenshotService::selectedRegion(desktop,QPoint(10,20),QPoint(40,50));
@@ -553,6 +643,7 @@ int main(int argc, char** argv)
     if(app.arguments().contains("--local-login-history-regression"))return localLoginHistoryRegression(root.path());
     if(app.arguments().contains("--interaction-regression"))return interactionRegression(root.path());
     if(app.arguments().contains("--voice-stop-regression"))return VoiceEngineRegression::run();
+    if(app.arguments().contains("--echo-regression"))return VoiceEngineRegression::echoRun();
     if(app.arguments().contains("--background-session-regression"))return backgroundSessionRegression(app,root.path());
     if (app.arguments().contains("--reset-regression")) return resetRegression(root.path());
     if (app.arguments().contains("--cloud-login-e2e")) return cloudLoginRegression(app,root.path());

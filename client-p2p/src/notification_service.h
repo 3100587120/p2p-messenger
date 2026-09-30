@@ -1,6 +1,8 @@
 #pragma once
 #include <QObject>
 #include <QTimer>
+#include <QBuffer>
+class QAudioSink;
 class NotificationService final : public QObject {
     Q_OBJECT
     Q_PROPERTY(bool backgroundEnabled READ backgroundEnabled NOTIFY backgroundEnabledChanged)
@@ -17,6 +19,8 @@ public:
     Q_INVOKABLE void moveToBackground();
     Q_INVOKABLE bool notificationsAllowed() const;
     void accountReady();
+    bool setCallActive(bool active);
+    bool callServiceActive() const;
     void setSessionRoot(const QString& root);
     QString backgroundStatus() const {return backgroundStatus_;}
 signals:
@@ -29,5 +33,7 @@ private:
     QTimer healthTimer_;
     qint64 serviceStartedAt_{0};
     bool missingServiceReported_{false};
+    QAudioSink* chimeSink_{nullptr};
+    QBuffer chimeBuffer_;
     void refreshBackgroundStatus();
 };

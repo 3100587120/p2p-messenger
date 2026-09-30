@@ -1,13 +1,15 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="io.p2pmessenger.app"
     android:installLocation="auto"
-    android:versionCode="21"
-    android:versionName="0.5.6-test">
+    android:versionCode="22"
+    android:versionName="0.5.7-test">
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!-- %%INSERT_PERMISSIONS -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -45,6 +47,7 @@
             <meta-data android:name="android.app.arguments" android:value="--message-service" />
             <meta-data android:name="android.app.background_running" android:value="true" />
         </service>
+        <service android:name="io.p2pmessenger.app.CallService" android:exported="false" android:stopWithTask="false" android:foregroundServiceType="microphone|mediaPlayback" />
         <receiver android:name="io.p2pmessenger.app.MessageBootReceiver" android:exported="false"><intent-filter><action android:name="android.intent.action.BOOT_COMPLETED" /></intent-filter></receiver>
         <activity android:name="io.p2pmessenger.app.AvatarPhotoActivity" android:exported="false" android:theme="@android:style/Theme.Translucent.NoTitleBar" />
         <provider

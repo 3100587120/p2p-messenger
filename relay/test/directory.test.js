@@ -47,6 +47,17 @@ test('admin reset requires operation-specific proof and cannot be replayed', asy
   assert.equal(await d.lookup('11'),null); assert.equal(await d.register(key().id,a.code).catch(()=>null),null);
   const b=key(); assert.equal(await d.register(b.id,b.code),'11');
 });
+test('contact backup requires password proof, stores only bounded opaque ciphertext', async () => {
+  const store=storage(),d=new UidDirectory(store),a=key(),token=randomBytes(32).toString('base64url');
+  const auth={v:1,salt:randomBytes(16).toString('base64url'),iterations:600000,token,backup:'a'.repeat(120),name:'Backup test',code:a.code};
+  const uid=await d.register(a.id,a.code,{},auth),snapshot={id:'33333333-3333-3333-3333-333333333333',envelope:'b'.repeat(120)};
+  assert.equal(await d.contacts(uid,token),null);
+  await assert.rejects(d.contacts(uid,randomBytes(32).toString('base64url'),snapshot),/invalid_login/);
+  assert.deepEqual(await d.contacts(uid,token,snapshot),snapshot);
+  assert.deepEqual(await d.contacts(uid,token),snapshot);
+  await assert.rejects(d.contacts(uid,token,{...snapshot,envelope:'b'.repeat(56001)}),/invalid_backup/);
+  await d.register(a.id,a.code,{},auth);assert.deepEqual(await d.contacts(uid,token),snapshot);
+});
 test('wrong public key cannot replace UID binding', async () => {
   const d = new UidDirectory(storage()), a = key(), b = key();
   await assert.rejects(d.register(a.id,b.code), /identity_mismatch/);

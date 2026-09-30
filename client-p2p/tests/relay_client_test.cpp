@@ -10,8 +10,89 @@
 #include <QWebSocketServer>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <QElapsedTimer>
+#include <QUuid>
+#include <memory>
 
 #include <iostream>
+
+static int responsiveLoginRegression(QCoreApplication& app)
+{
+    QTemporaryDir root(QDir::tempPath()+"/async-login-test-XXXXXX");
+    if(!root.isValid())return 7;
+    LocalVault owner(QDir(root.path()).filePath("owner")); RelayCrypto identity;
+    if(!identity.loadOrCreate(owner))return 7;
+    const QString password="Regression-password-123";
+    const auto record=identity.makeLoginRecord(password,"Login regression");
+    if(record.isEmpty())return 7;
+    for(int scenario=0;scenario<6;++scenario) {
+        LocalVault vault(QDir(root.path()).filePath(QString::number(scenario)));
+        auto client=std::make_unique<RelayClient>(vault);
+        const auto original=client->inviteCode();
+        QWebSocketServer server("isolated-login-test",QWebSocketServer::NonSecureMode);
+        if(!server.listen(QHostAddress::LocalHost,0))return 7;
+        QEventLoop loop;QTimer heartbeat;heartbeat.setInterval(5);
+        int ticks=0;bool result=false,started=false,restored=false,tokenSeen=false,contactsRestored=false;
+        QElapsedTimer elapsed;elapsed.start();qint64 last=0,maxGap=0;
+        QObject::connect(&heartbeat,&QTimer::timeout,&loop,[&]{const auto now=elapsed.elapsed();maxGap=qMax(maxGap,now-last);last=now;++ticks;});
+        QObject::connect(&server,&QWebSocketServer::newConnection,&loop,[&]{
+            auto* socket=server.nextPendingConnection();
+            QObject::connect(socket,&QWebSocket::disconnected,socket,&QObject::deleteLater);
+            QObject::connect(socket,&QWebSocket::textMessageReceived,&loop,[&,socket](const QString& text){
+                const auto frame=QJsonDocument::fromJson(text.toUtf8()).object();
+                const auto op=frame.value("op").toString();
+                if(op=="contacts_get"){
+                    const auto backupId=QUuid::createUuid().toString(QUuid::WithoutBraces);
+                    const auto encrypted=identity.seal(RelayCrypto::publicKeyFromCode(identity.inviteCode()),backupId,QJsonObject{{"type","contact_backup"},{"v",1},{"profile",QJsonObject{{"marker","friends-restored"}}}});
+                    socket->sendTextMessage(QString::fromUtf8(QJsonDocument(QJsonObject{{"op","contacts_get_result"},{"id",frame.value("id")},{"snapshot",QJsonObject{{"id",backupId},{"envelope",QString::fromLatin1(encrypted)}}}}).toJson(QJsonDocument::Compact)));return;}
+                if(op=="register" && scenario==5){tokenSeen=true;loop.quit();return;}
+                if(op=="register" && scenario==4) {
+                    const auto auth=frame.value("auth").toObject();
+                    if(auth.value("iterations")!=600000 || auth.value("backup").toString().isEmpty() || auth.value("code").toString()!=client->inviteCode()){loop.quit();return;}
+                    socket->sendTextMessage(QString::fromUtf8(QJsonDocument(QJsonObject{{"op","registered"},{"id",frame.value("id")},{"uid","11"}}).toJson(QJsonDocument::Compact)));return;
+                }
+                if(op=="login_info") {
+                    QJsonObject info{{"op","login_info_result"},{"id",frame.value("id")},{"uid","11"},{"salt",record.value("salt")},{"iterations",600000}};
+                    socket->sendTextMessage(QString::fromUtf8(QJsonDocument(info).toJson(QJsonDocument::Compact)));
+                    if(scenario==1 || scenario==2)QTimer::singleShot(20,&loop,[&]{
+                        if(scenario==1)client->cancelLogin();else client.reset();
+                        QTimer::singleShot(1800,&loop,[&]{result=!tokenSeen && (scenario==2 || (!client->loginPending() && client->inviteCode()==original));loop.quit();});
+                    });
+                } else if(op=="login") {
+                    tokenSeen=true;
+                    if(scenario!=0 && scenario!=3){result=false;loop.quit();return;}
+                    if(frame.value("token")!=record.value("token")) {
+                        socket->sendTextMessage(QString::fromUtf8(QJsonDocument(QJsonObject{{"op","directory_error"},{"id",frame.value("id")},{"reason","invalid_password"}}).toJson(QJsonDocument::Compact)));return;
+                    }
+                    auto response=record;response.insert("op","login_result");response.insert("id",frame.value("id"));response.insert("uid","11");
+                    socket->sendTextMessage(QString::fromUtf8(QJsonDocument(response).toJson(QJsonDocument::Compact)));
+                }
+            });
+        });
+        QObject::connect(client.get(),&RelayClient::passwordAccountRestored,&loop,[&](const QString& uid,const QString&){restored=uid=="11";});
+        QObject::connect(client.get(),&RelayClient::contactBackupRestored,&loop,[&](const QVariantMap& value){contactsRestored=value.value("marker")=="friends-restored";});
+        QObject::connect(client.get(),&RelayClient::uidAssigned,&loop,[&](const QString& uid){if(scenario==4){result=uid=="11" && client->passwordConfigured() && !client->registrationPending();loop.quit();}});
+        QObject::connect(client.get(),&RelayClient::loginStateChanged,&loop,[&]{
+            if(started && !client->loginPending() && (scenario==0 || scenario==3)) {
+                result=scenario==0?restored && contactsRestored && client->passwordConfigured() && client->inviteCode()==identity.inviteCode():!restored && client->inviteCode()==original;
+                loop.quit();
+            }
+        });
+        QObject::connect(client.get(),&RelayClient::connectedChanged,&loop,[&](bool connected){
+            if(connected && !started){started=true;if(scenario>=4){
+                if(!client->registerPasswordAccount(password,"Async registration") || !client->registrationPending())loop.quit();
+                if(scenario==5)QTimer::singleShot(20,&loop,[&]{client->setEnabled(false);QTimer::singleShot(1800,&loop,[&]{result=!tokenSeen && !client->registrationPending() && !vault.hasConversation("__account_registration") && !client->passwordConfigured();loop.quit();});});
+            }else client->loginPasswordAccount("11",scenario==3?"Wrong-password-123":password);}
+        });
+        client->setEndpoint(QUrl(QStringLiteral("ws://127.0.0.1:%1").arg(server.serverPort())));client->setEnabled(true);
+        QTimer timeout;timeout.setSingleShot(true);QObject::connect(&timeout,&QTimer::timeout,&loop,&QEventLoop::quit);timeout.start(15000);heartbeat.start();loop.exec();
+        if(!result || ticks<10 || maxGap>250){std::cerr<<"LOGIN_SCENARIO="<<scenario<<" result="<<result<<" started="<<started<<" token="<<tokenSeen<<" ticks="<<ticks<<" gap="<<maxGap<<" pending="<<(client && client->registrationPending())<<" stored="<<vault.hasConversation("__account_registration")<<std::endl;return 7;}
+        std::cout<<"LOGIN_SCENARIO="<<scenario<<" HEARTBEAT_TICKS="<<ticks<<" MAX_GUI_GAP_MS="<<maxGap<<" PASS"<<std::endl;
+    }
+    Q_UNUSED(app);
+    std::cout<<"ASYNC_LOGIN_SUCCESS_CANCEL_DESTROY_WRONG_PASSWORD_REGISTRATION_AND_RETIRED_SESSION_NO_WRITES=PASS"<<std::endl;
+    return 0;
+}
 
 static int untrustedReceiptRegression(QCoreApplication& app)
 {
@@ -156,6 +237,7 @@ static int runRemoteReceiver(QCoreApplication& app)
 int main(int argc, char** argv)
 {
     QCoreApplication app(argc, argv);
+    if (app.arguments().contains("--responsive-login-regression")) return responsiveLoginRegression(app);
     if (app.arguments().contains("--untrusted-receipt-regression")) return untrustedReceiptRegression(app);
     if (!qEnvironmentVariable("P2P_MESSENGER_RELAY_PROFILE_ROOT").isEmpty())
         return inspectProfile(app, qEnvironmentVariable("P2P_MESSENGER_RELAY_PROFILE_ROOT"));

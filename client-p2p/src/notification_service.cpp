@@ -8,6 +8,10 @@
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QAudioSink>
+#include <QMediaDevices>
+#include <cmath>
+#include <cstring>
 #ifdef Q_OS_WIN
 #include <windows.h>
 #include <shellapi.h>
@@ -29,6 +33,18 @@ NotificationService::NotificationService(QObject* parent) : QObject(parent) {
     healthTimer_.setInterval(3000);
     connect(&healthTimer_,&QTimer::timeout,this,&NotificationService::refreshBackgroundStatus);
 #ifdef Q_OS_WIN
+    const auto audioDevice=QMediaDevices::defaultAudioOutput();const auto format=audioDevice.preferredFormat();
+    if(!audioDevice.isNull() && format.isValid()){
+        QByteArray samples;const int frames=int(format.sampleRate()*0.32);samples.resize(frames*format.bytesPerFrame());
+        for(int i=0;i<frames;++i){const double t=double(i)/format.sampleRate(),phase=t<0.14?t:t-0.16,frequency=t<0.14?740:990;
+            const double envelope=phase>=0?qMin(1.0,phase/0.012)*std::exp(-phase*22):0;
+            const double amplitude=0.16*envelope*std::sin(6.283185307179586*frequency*t);
+            for(int c=0;c<format.channelCount();++c){char* at=samples.data()+(i*format.channelCount()+c)*format.bytesPerSample();
+                switch(format.sampleFormat()){case QAudioFormat::Float:{const float v=float(amplitude);std::memcpy(at,&v,4);break;}case QAudioFormat::Int16:{const qint16 v=qint16(amplitude*32767);std::memcpy(at,&v,2);break;}case QAudioFormat::Int32:{const qint32 v=qint32(amplitude*2147483647);std::memcpy(at,&v,4);break;}case QAudioFormat::UInt8:*at=char(128+amplitude*127);break;default:break;}
+            }
+        }
+        chimeBuffer_.setData(samples);chimeBuffer_.open(QIODevice::ReadOnly);chimeSink_=new QAudioSink(audioDevice,format,this);
+    }
     WNDCLASSW cls {}; cls.lpfnWndProc = notificationWindow; cls.hInstance = GetModuleHandleW(nullptr); cls.lpszClassName = L"ShuangDianLiaoNotifications";
     RegisterClassW(&cls);
     window_ = CreateWindowExW(0,cls.lpszClassName,L"双点聊",0,0,0,0,0,HWND_MESSAGE,nullptr,cls.hInstance,nullptr);
@@ -41,6 +57,7 @@ NotificationService::NotificationService(QObject* parent) : QObject(parent) {
 #endif
 }
 NotificationService::~NotificationService() {
+    if(chimeSink_){chimeSink_->stop();delete chimeSink_;chimeSink_=nullptr;}
 #ifdef Q_OS_WIN
     if (window_) { NOTIFYICONDATAW icon {}; icon.cbSize=sizeof(icon); icon.hWnd=static_cast<HWND>(window_); icon.uID=1; Shell_NotifyIconW(NIM_DELETE,&icon); DestroyWindow(static_cast<HWND>(window_)); }
 #endif
@@ -63,6 +80,21 @@ void NotificationService::setBackgroundEnabled(bool enabled) {
     emit backgroundEnabledChanged();
     if(enabled) {serviceStartedAt_=QDateTime::currentMSecsSinceEpoch();missingServiceReported_=false;}
     refreshBackgroundStatus();
+}
+bool NotificationService::setCallActive(bool active) {
+#ifdef Q_OS_ANDROID
+    const auto ok=QJniObject::callStaticMethod<jboolean>("io/p2pmessenger/app/CallService","setActive","(Landroid/content/Context;Z)Z",QNativeInterface::QAndroidApplication::context().object<jobject>(),jboolean(active));
+    return !QJniEnvironment().checkAndClearExceptions() && ok;
+#else
+    Q_UNUSED(active);return true;
+#endif
+}
+bool NotificationService::callServiceActive() const {
+#ifdef Q_OS_ANDROID
+    const auto ok=QJniObject::callStaticMethod<jboolean>("io/p2pmessenger/app/CallService","isActive","()Z");return !QJniEnvironment().checkAndClearExceptions() && ok;
+#else
+    return true;
+#endif
 }
 void NotificationService::accountReady() {
 #ifdef Q_OS_ANDROID
@@ -133,10 +165,15 @@ void NotificationService::moveToBackground() {
 #endif
 }
 void NotificationService::show(const QString& title, const QString& body) {
+#ifdef Q_OS_WIN
+    // Foreground chat also has an audible reminder. Do not additionally ask
+    // the shell balloon to play its own sound for the same message.
+    if(chimeSink_){chimeSink_->stop();chimeBuffer_.seek(0);chimeSink_->start(&chimeBuffer_);}
+#endif
     if (qobject_cast<QGuiApplication*>(QCoreApplication::instance()) && QGuiApplication::applicationState() == Qt::ApplicationActive) return;
 #ifdef Q_OS_WIN
     if (!window_) return;
-    NOTIFYICONDATAW icon {}; icon.cbSize=sizeof(icon); icon.hWnd=static_cast<HWND>(window_); icon.uID=1; icon.uFlags=NIF_INFO; icon.dwInfoFlags=NIIF_INFO;
+    NOTIFYICONDATAW icon {}; icon.cbSize=sizeof(icon); icon.hWnd=static_cast<HWND>(window_); icon.uID=1; icon.uFlags=NIF_INFO; icon.dwInfoFlags=NIIF_INFO | NIIF_NOSOUND;
     wcsncpy_s(icon.szInfoTitle,reinterpret_cast<const wchar_t*>(title.utf16()),_TRUNCATE);
     wcsncpy_s(icon.szInfo,reinterpret_cast<const wchar_t*>(body.utf16()),_TRUNCATE);
     Shell_NotifyIconW(NIM_MODIFY,&icon);

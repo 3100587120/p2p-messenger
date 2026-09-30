@@ -8,6 +8,8 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QScopedValueRollback>
+#include <QQuickWindow>
+#include <QSGRendererInterface>
 #ifdef Q_OS_ANDROID
 #include <QJniObject>
 #include <QtCore/qnativeinterface.h>
@@ -102,6 +104,9 @@ int main(int argc, char* argv[])
 #endif
 #ifdef Q_OS_ANDROID
     qputenv("QT_BLOCK_EVENT_LOOPS_WHEN_SUSPENDED","0");
+    // Use Qt's supported Android OpenGL path and request a fresh frame after
+    // surface recreation. Never destroy the native window to switch accounts.
+    QQuickWindow::setGraphicsApi(QSGRendererInterface::OpenGL);
 #endif
     QQuickStyle::setStyle(QStringLiteral("Material"));
     QGuiApplication application(argc, argv);
@@ -173,6 +178,7 @@ int main(int argc, char* argv[])
     QObject::connect(&screenCapture,&ScreenshotService::error,&engine,[&](const QString& reason){restoreScreenshotWindow();messenger->screenshotFailed(reason);});
     engine.rootContext()->setContextProperty(QStringLiteral("messenger"), messenger.get());
     engine.rootContext()->setContextProperty(QStringLiteral("accountManager"), &accounts);
+    bool rebuildingProfile = false;
     const auto bindProfile = [&] {
         QObject::connect(messenger.get(),&MessengerController::screenshotSelectionRequested,&screenCapture,&ScreenshotService::start);
         QObject::connect(messenger.get(), &MessengerController::incomingNotice, &notifications, &NotificationService::show);
@@ -181,9 +187,21 @@ int main(int argc, char* argv[])
         QObject::connect(messenger.get(),&MessengerController::uidChanged,&accounts,[&]{accounts.completeLogin(messenger->userCode(),messenger->inviteCode());});
         accounts.updateName(messenger->profileName());
         QObject::connect(messenger.get(), &MessengerController::profileNameChanged, &accounts, [&] { accounts.updateName(messenger->profileName()); });
+#ifdef Q_OS_ANDROID
+        QObject::connect(messenger.get(),&MessengerController::registrationStatusChanged,&engine,[&]{
+            if(rebuildingProfile || messenger->loginPending() || messenger->registrationPending() || messenger->callState()=="active")return;
+            const auto state=application.applicationState();
+            if((state==Qt::ApplicationHidden || state==Qt::ApplicationSuspended) && notifications.backgroundEnabled() && !systemPickerOpen() && !messenger->voicePermissionPending())background.setActive(false);
+        },Qt::QueuedConnection);
+        QObject::connect(messenger.get(),&MessengerController::voiceChanged,&engine,[&]{
+            if(!notifications.setCallActive(messenger->callState()=="active") && messenger->callState()=="active")messenger->backgroundCallFailed();
+            if(messenger->callState()=="active")QTimer::singleShot(750,&engine,[&]{if(messenger->callState()=="active" && !notifications.callServiceActive())messenger->backgroundCallFailed();});
+            const auto state=application.applicationState();
+            if(messenger->callState()=="idle" && (state==Qt::ApplicationHidden || state==Qt::ApplicationSuspended) && notifications.backgroundEnabled() && !messenger->voicePermissionPending())background.setActive(false);
+        },Qt::QueuedConnection);
+#endif
     };
     bindProfile();
-    bool rebuildingProfile = false;
     const auto reloadProfile = [&](const QString& root) {
         QTimer::singleShot(0, &engine, [&, root] {
 #ifdef Q_OS_ANDROID
@@ -217,12 +235,29 @@ int main(int argc, char* argv[])
         if(rebuildingProfile)return;
         if((state==Qt::ApplicationHidden || state==Qt::ApplicationSuspended) && (systemPickerOpen() || messenger->voicePermissionPending()))return;
         if((state==Qt::ApplicationHidden || state==Qt::ApplicationSuspended) && !notifications.backgroundEnabled())return;
+        // Keep the writer lease until password work has committed or failed.
+        // Its completion signal queues the eventual handover without reentry.
+        if((state==Qt::ApplicationHidden || state==Qt::ApplicationSuspended) && (messenger->loginPending() || messenger->registrationPending() || messenger->callState()=="active"))return;
         background.setActive(state==Qt::ApplicationActive || state==Qt::ApplicationInactive);
         if(state==Qt::ApplicationActive && !messenger->userCode().isEmpty())notifications.accountReady();
     });
     if(!messenger->userCode().isEmpty())notifications.accountReady();
 #endif
     engine.loadFromModule("P2PMessenger", "Main");
+#ifdef Q_OS_ANDROID
+    for(auto* object:engine.rootObjects())if(auto* window=qobject_cast<QQuickWindow*>(object)){
+        // Release GPU state while hidden so resuming recreates render resources
+        // for the new Android surface, but retains the QML/native window itself.
+        window->setPersistentGraphics(false);window->setPersistentSceneGraph(false);
+    }
+    QObject::connect(&application,&QGuiApplication::applicationStateChanged,&engine,[&](Qt::ApplicationState state){
+        if(state!=Qt::ApplicationActive)return;
+        for(auto* object:engine.rootObjects())if(auto* window=qobject_cast<QQuickWindow*>(object)){
+            window->show();window->requestUpdate();window->update();
+            QTimer::singleShot(250,window,[window]{window->requestUpdate();window->update();});
+        }
+    });
+#endif
     traceStartup("qml-loaded");
     if (engine.rootObjects().isEmpty())
         return 1;

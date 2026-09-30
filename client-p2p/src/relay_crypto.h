@@ -17,6 +17,9 @@ public:
     QJsonObject makeLoginRecord(const QString& password, const QString& name) const;
     static QString loginToken(const QString& password, const QString& salt, int iterations);
     bool restoreLoginRecord(LocalVault& vault, const QString& password, const QJsonObject& record);
+    // Pure password work can run off the GUI thread; vault/JNI writes stay on its owner thread.
+    static QByteArray decryptLoginIdentity(const QString& password, const QJsonObject& record);
+    bool installLoginIdentity(LocalVault& vault, const QByteArray& secret, const QString& code);
     static QByteArray publicKeyFromCode(const QString& code);
     static QString idForPublicKey(const QByteArray& key);
 

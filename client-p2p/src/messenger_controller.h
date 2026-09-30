@@ -13,6 +13,7 @@
 #include "private_network_config.h"
 #include "relay_client.h"
 #include "voice_engine.h"
+#include "file_stream.h"
 
 class QTimer;
 
@@ -73,6 +74,7 @@ public:
     Q_INVOKABLE void captureScreenshot();
     void acceptScreenshot(const QImage& image);
     void screenshotFailed(const QString& reason){setError(reason);}
+    void backgroundCallFailed(){endCall();setError(tr("后台通话服务未能启动，请开启麦克风权限并允许后台运行"));}
     Q_INVOKABLE bool sendScreenshot();
     Q_INVOKABLE void discardScreenshot(){screenshotPreview_.clear();emit screenshotChanged();}
     Q_INVOKABLE void stopVoicePlayback(){voice_.stopPlayback();}
@@ -80,8 +82,19 @@ public:
     Q_INVOKABLE QVariantMap messageSenderDetails(int index) const;
     Q_INVOKABLE bool addMessageSender(int index);
     Q_INVOKABLE bool deleteLocalMessage(int index);
+    Q_INVOKABLE bool withdrawMessage(int index);
     Q_INVOKABLE bool forwardMessage(int index,const QString& targetId);
     Q_INVOKABLE bool removeActiveContact();
+    Q_INVOKABLE bool setContactMuted(bool muted);
+    Q_INVOKABLE bool setContactRemark(const QString& remark);
+    Q_INVOKABLE bool setContactPinned(bool pinned);
+    Q_INVOKABLE bool clearActiveHistory();
+    Q_INVOKABLE void setThreadVisible(bool visible);
+    Q_INVOKABLE bool setGroupAnnouncement(const QString& text);
+    Q_INVOKABLE bool setGroupAdministrator(const QString& memberId, bool enabled);
+    Q_INVOKABLE QVariantList groupMembers() const;
+    Q_INVOKABLE bool canManageGroup() const;
+    Q_INVOKABLE bool ownsGroup() const;
     Q_INVOKABLE bool renameGroup(const QString& name);
     Q_INVOKABLE void chooseGroupAvatar();
     Q_INVOKABLE bool setGroupAvatar(const QString& path);
@@ -115,6 +128,10 @@ public:
     bool voicePermissionPending() const { return voice_.permissionPending(); }
     QString callState() const { return callState_; }
     QString callPeerName() const { return callPeerName_; }
+    Q_PROPERTY(int callDuration READ callDuration NOTIFY voiceChanged)
+    Q_PROPERTY(int callParticipants READ callParticipants NOTIFY voiceChanged)
+    int callDuration() const;
+    int callParticipants() const;
     Q_INVOKABLE bool sendSticker(const QString& path);
     QVariantList stickerLibrary() const { return stickers_; }
     Q_INVOKABLE bool sendSavedSticker(int index);
@@ -195,6 +212,7 @@ signals:
     void peerProbeStatusChanged();
 
 private:
+    friend class CallProtocolRegression;
     QVariantList contacts_;
     QVariantList stickers_;
     QVariantList messages_;
@@ -231,6 +249,7 @@ private:
     GatewayMapper gatewayMapper_;
     LocalVault vault_;
     RelayClient relay_;
+    FileStream files_;
     VoiceEngine voice_;
     QString playingVoiceData_;
     QString screenshotPreview_;
@@ -238,15 +257,24 @@ private:
     QTimer callHeartbeat_;
     QString callPing_;
     bool recording_ {false};
+    bool threadVisible_ {false};
+    qint64 callStartedAt_ {0};
+    QString callContactId_;
+    QString callGroupId_;
+    struct CallParticipant {QByteArray key;bool accepted{false};qint64 lastSeen{0};int sequence{-1};QList<QByteArray> frames;};
+    QMap<QString,CallParticipant> callParticipants_;
+    QTimer callMix_;
     QString recordingContact_, callState_ {QStringLiteral("idle")}, callPeerName_, callId_, callPeerId_;
     QByteArray callKey_;
     int callSequence_ {0}, receivedSequence_ {-1};
     QVariantMap activeEntry() const;
     bool sendMedia(const QByteArray& data, const QString& kind, const QString& contactId,const QString& fileName = {});
     void receiveCall(const QString& sender, const QByteArray& key, const QJsonObject& message);
+    bool sendCallEvent(QJsonObject event,bool acceptedOnly=false);
     void broadcastProfile();
     void broadcastGroupProfile();
     void broadcastGroupMemberProfile(const QVariantMap& group);
+    void broadcastGroupEvent(const QVariantMap& group, QJsonObject event);
     QHash<QString, QString> androidDownloadDestinations_;
     QHash<QString, QString> androidDownloadPaths_;
 

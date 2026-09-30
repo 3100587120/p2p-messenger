@@ -24,6 +24,8 @@
 #include <QTimer>
 #include <QImageReader>
 #include <QBuffer>
+#include <QThreadPool>
+#include <QPointer>
 #ifdef Q_OS_ANDROID
 #include <QJniObject>
 #include <QtCore/qnativeinterface.h>
@@ -126,7 +128,26 @@ MessengerController::MessengerController(QObject* parent)
     : QObject(parent)
     , networkStatus_(tr("仅本地模式 — 尚未配置自建服务"))
     , relay_(vault_, this)
+    , files_(vault_,relay_,this)
 {
+    connect(&files_,&FileStream::error,this,&MessengerController::setError);
+    connect(&files_,&FileStream::fileReady,this,[this](const QString& contactId,const QVariantMap& message){
+        const auto stored=contactId==activeContactId_?messages_:vault_.loadConversation(contactId);
+        for(const auto& value:stored)if(value.toMap().value("messageId")==message.value("messageId") && value.toMap().value("senderId")==message.value("senderId"))return;
+        if(!storeMessageForContact(contactId,message)){relay_.rejectCurrentPacket();setError(tr("文件记录无法保存，请检查本机空间"));}
+    });
+    connect(&files_,&FileStream::fileSaved,this,[this](const QString& path){
+#ifdef Q_OS_ANDROID
+        if(androidDownloadDestinations_.contains(path)){
+            const auto destination=androidDownloadDestinations_.take(path);const auto context=QNativeInterface::QAndroidApplication::context();
+            QPointer<MessengerController> guard(this);QThreadPool::globalInstance()->start([guard,path,destination,context]{
+                const bool ok=QJniObject::callStaticMethod<jboolean>("io/p2pmessenger/app/ContentFiles","copyFromCache","(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)Z",context.object<jobject>(),QJniObject::fromString(path).object<jstring>(),QJniObject::fromString(destination).object<jstring>());
+                QFile::remove(path);QMetaObject::invokeMethod(QCoreApplication::instance(),[guard,ok]{if(!guard)return;if(ok)emit guard->operationCompleted(tr("文件已保存"),tr("已写入你选择的位置"));else guard->setError(tr("无法保存到选定位置，请检查存储权限和空间"));},Qt::QueuedConnection);
+            });return;
+        }
+#endif
+        emit operationCompleted(tr("文件已保存"),tr("已写入你选择的位置"));
+    });
     if (auto* gui = qobject_cast<QGuiApplication*>(QCoreApplication::instance())) {
         connect(gui, &QGuiApplication::applicationStateChanged, this, [this](Qt::ApplicationState state) {
             if (state == Qt::ApplicationActive && assistedConnection_ && !relay_.isConnected()) relay_.refreshConnection();
@@ -188,6 +209,20 @@ MessengerController::MessengerController(QObject* parent)
         if (!saveProfile()) { setError(tr("登录身份已恢复，但本机资料保存失败，请重试")); return; }
         emit uidChanged(); emit profileNameChanged(); emit inviteCodeChanged(); emit pairingCodeChanged(); emit notificationPermissionRequested();
     });
+    connect(&relay_,&RelayClient::contactBackupRestored,this,[this](const QVariantMap& restored){
+        if(!contacts_.isEmpty())return; // Never replace a populated local profile.
+        const auto rows=restored.value("contacts").toList();if(rows.size()>200)return;
+        QVariantList validated;
+        for(const auto& value:rows){const auto row=value.toMap();const auto key=RelayClient::publicKeyFromCode(row.value("relayPublic").toString());
+            if(row.value("transport")!="relay" || row.value("id").toString().isEmpty())return;
+            if(!row.value("group").toBool() && (key.isEmpty() || row.value("uri").toString()!=RelayClient::idForPublicKey(key)))return;
+            if(row.value("group").toBool()){if(row.value("groupId").toString().isEmpty() || row.value("members").toList().size()>20)return;for(const auto& code:row.value("members").toList())if(RelayClient::publicKeyFromCode(code.toString()).isEmpty())return;}
+            validated.append(row);
+        }
+        contacts_=validated;leftGroups_=restored.value("leftGroups").toStringList();profileAvatar_=safeAvatar(restored.value("avatar").toString());
+        if(!saveProfile()){contacts_.clear();setError(tr("好友备份已解密，但本机无法保存，请检查空间"));return;}
+        emit contactsChanged();emit activeContactChanged();
+    });
     connect(&relay_, &RelayClient::uidResolved, this, [this](const QString& uid, const QString& code, const QString& name) {
         if (RelayClient::publicKeyFromCode(code).isEmpty()) { setError(tr("没有找到 UID %1，请确认对方已在同一服务注册").arg(uid)); return; }
         if (addContact(uidRemark_.isEmpty() ? name : uidRemark_, code)) {
@@ -200,10 +235,33 @@ MessengerController::MessengerController(QObject* parent)
     connect(&relay_, &RelayClient::packetReceived, this,
             [this](const QString& senderId, const QByteArray& senderPublic, const QJsonObject& message) {
         const auto type = message.value(QStringLiteral("type")).toString();
+        if(type=="stream_chunk"){
+            const auto group=message.value("groupId").toString();QString contactId;
+            for(const auto& value:contacts_){const auto row=value.toMap();if(row.value("transport")!="relay" || !row.value("ready").toBool())continue;
+                if(group.isEmpty() && !row.value("group").toBool() && row.value("uri")==senderId){contactId=row.value("id").toString();break;}
+                if(!group.isEmpty() && row.value("groupId")==group){for(const auto& code:row.value("members").toList())if(RelayClient::idForPublicKey(RelayClient::publicKeyFromCode(code.toString()))==senderId)contactId=row.value("id").toString();if(!contactId.isEmpty())break;}
+            }
+            if(contactId.isEmpty() || !files_.receive(senderId,contactId,message))relay_.rejectCurrentPacket();return;
+        }
         if (type.startsWith(QStringLiteral("call_"))) { receiveCall(senderId, senderPublic, message); return; }
         // The relay client sends an authenticated receipt for this probe.
         // It must not create a contact or appear in chat history.
         if (type == QStringLiteral("probe")) return;
+        if(type=="withdraw"){
+            const auto id=message.value("messageId").toString(),group=message.value("groupId").toString();if(id.size()!=36)return;
+            for(const auto& value:contacts_){const auto row=value.toMap();if(row.value("transport")!="relay" || !row.value("ready").toBool())continue;
+                bool allowed=group.isEmpty()?(!row.value("group").toBool() && row.value("uri")==senderId):row.value("groupId").toString()==group;
+                if(allowed && !group.isEmpty()){allowed=false;for(const auto& code:row.value("members").toList())allowed|=RelayClient::idForPublicKey(RelayClient::publicKeyFromCode(code.toString()))==senderId;}
+                if(!allowed)continue;const auto contactId=row.value("id").toString();auto stored=contactId==activeContactId_?messages_:vault_.loadConversation(contactId);bool changed=false;
+                for(auto& item:stored){auto msg=item.toMap();if(msg.value("messageId")==id && !msg.value("outgoing").toBool() && msg.value("senderId")==senderId){msg.insert("body",tr("对方撤回了一条消息"));msg.insert("kind","withdrawn");msg.remove("fileData");msg.remove("filePath");msg.remove("fileId");item=msg;changed=true;}}
+                if(message.value("file").toBool()){
+                    if(!files_.cancelIncoming(senderId,contactId,id)){relay_.rejectCurrentPacket();return;}
+                    if(!changed){if(!storeMessageForContact(contactId,QVariantMap{{"body",tr("对方撤回了一条消息")},{"kind","withdrawn"},{"outgoing",false},{"messageId",id},{"senderId",senderId},{"time",QDateTime::currentDateTime().toString("HH:mm")}}))relay_.rejectCurrentPacket();return;}
+                }
+                if(!changed){relay_.rejectCurrentPacket();return;}
+                if(!vault_.saveConversation(contactId,stored)){relay_.rejectCurrentPacket();return;}if(contactId==activeContactId_){messages_=stored;emit messagesChanged();}return;
+            }relay_.rejectCurrentPacket();return;
+        }
         if (type == QStringLiteral("friend_request")) {
             for(const auto& value:contacts_){const auto row=value.toMap();if(row.value("uri")==senderId && row.value("transport")=="relay" && !row.value("group").toBool() && row.value("ready").toBool())return;}
             const auto previousRequests = pendingRelayRequests_;
@@ -297,6 +355,28 @@ MessengerController::MessengerController(QObject* parent)
             emit pendingGroupRequestsChanged();
             return;
         }
+        if(type=="group_announcement" || type=="group_admins") {
+            for(auto& value:contacts_) {
+                auto row=value.toMap();if(!row.value("group").toBool() || row.value("groupId").toString()!=message.value("groupId").toString())continue;
+                const auto owner=row.value("ownerId",RelayClient::idForPublicKey(RelayClient::publicKeyFromCode(row.value("members").toList().value(0).toString()))).toString();
+                if(senderId!=owner && (type=="group_admins" || !row.value("admins").toStringList().contains(senderId))){relay_.rejectCurrentPacket();return;}
+                const auto revision=message.value("revision").toInteger();
+                const auto slot=type=="group_admins"?"adminsRevision":"announcementRevision";
+                if(revision<=row.value(slot).toLongLong() || revision>QDateTime::currentMSecsSinceEpoch()+60000)return;
+                if(type=="group_admins") {
+                    QStringList admins;
+                    for(const auto& admin:message.value("admins").toArray()) {
+                        bool member=false;for(const auto& code:row.value("members").toList())member|=RelayClient::idForPublicKey(RelayClient::publicKeyFromCode(code.toString()))==admin.toString();
+                        if(!member || admins.contains(admin.toString())){relay_.rejectCurrentPacket();return;}admins.append(admin.toString());
+                    }row.insert("admins",admins);
+                }else{const auto text=message.value("text").toString();if(text.size()>2000){relay_.rejectCurrentPacket();return;}row.insert("announcement",text);}
+                const auto previous=value;row.insert(slot,revision);value=row;
+                if(!saveProfile()){value=previous;relay_.rejectCurrentPacket();return;}
+                emit contactsChanged();emit activeContactChanged();
+                if(type=="group_announcement")appendMessageForContact(row.value("id").toString(),tr("群公告：%1").arg(message.value("text").toString()),false,"system");
+                return;
+            }relay_.rejectCurrentPacket();return;
+        }
         if(type=="group_leave") {
             for(auto& value:contacts_){auto row=value.toMap();if(!row.value("group").toBool() || row.value("groupId").toString()!=message.value("groupId").toString())continue;
                 auto members=row.value("members").toList();bool found=false;for(qsizetype i=members.size();i>0;--i)if(RelayClient::idForPublicKey(RelayClient::publicKeyFromCode(members[i-1].toString()))==senderId){members.removeAt(i-1);found=true;}
@@ -322,8 +402,8 @@ MessengerController::MessengerController(QObject* parent)
             const auto groupId=message.value("groupId").toString();if(groupId.isEmpty())return;
             for(auto& value:contacts_) {
                 auto row=value.toMap();if(!row.value("group").toBool() || row.value("groupId").toString()!=groupId)continue;
-                bool member=false;for(const auto& code:row.value("members").toList())member|=RelayClient::idForPublicKey(RelayClient::publicKeyFromCode(code.toString()))==senderId;
-                if(!member){relay_.rejectCurrentPacket();return;}
+                const auto owner=row.value("ownerId",RelayClient::idForPublicKey(RelayClient::publicKeyFromCode(row.value("members").toList().value(0).toString()))).toString();
+                if(senderId!=owner && !row.value("admins").toStringList().contains(senderId)){relay_.rejectCurrentPacket();return;}
                 const auto name=message.value("name").toString().trimmed();if(name.isEmpty()||name.size()>64)return;
                 const auto previous=value;row.insert("name",name);row.insert("avatar",safeAvatar(message.value("avatar").toString()));value=row;
                 if(!saveProfile()){value=previous;relay_.rejectCurrentPacket();return;}
@@ -348,6 +428,7 @@ MessengerController::MessengerController(QObject* parent)
                             ? senderId.left(8) : message.value(QStringLiteral("nickname")).toString().trimmed().left(64), body)},
                         {QStringLiteral("outgoing"), false},
                         {QStringLiteral("senderId"), senderId},
+                        {"messageId",message.value("messageId").toString()},{"sentAt",message.value("sentAt").toInteger()},
                         {QStringLiteral("senderDetails"),memberSnapshot(entry,senderId,senderPublic)},
                         {QStringLiteral("kind"), QStringLiteral("text")},
                         {QStringLiteral("time"), QDateTime::currentDateTime().toString(QStringLiteral("HH:mm"))}
@@ -436,6 +517,7 @@ MessengerController::MessengerController(QObject* parent)
                 {QStringLiteral("senderDetails"), groupId.isEmpty()?QVariantMap():memberSnapshot([&]{for(const auto& v:contacts_)if(v.toMap().value("id")==contactId)return v.toMap();return QVariantMap();}(),senderId,senderPublic)},
                 {QStringLiteral("kind"), mediaKind.isEmpty() ? QStringLiteral("file-offer") : mediaKind},
                 {QStringLiteral("fileId"), fileId},
+                {"messageId",fileId},
                 {QStringLiteral("fileData"), QString::fromLatin1(file.toBase64())},
                 {QStringLiteral("name"), name},
                 {QStringLiteral("time"), QDateTime::currentDateTime().toString(QStringLiteral("HH:mm"))}
@@ -463,6 +545,7 @@ MessengerController::MessengerController(QObject* parent)
                     if (!storeMessageForContact(entry.value(QStringLiteral("id")).toString(), QVariantMap {
                         {QStringLiteral("body"), body},
                         {QStringLiteral("outgoing"), false},
+                        {"senderId",senderId},{"messageId",message.value("messageId").toString()},{"sentAt",message.value("sentAt").toInteger()},
                         {QStringLiteral("kind"), QStringLiteral("text")},
                         {QStringLiteral("time"), QDateTime::currentDateTime().toString(QStringLiteral("HH:mm"))}
                     })) relay_.rejectCurrentPacket();
@@ -707,7 +790,12 @@ MessengerController::MessengerController(QObject* parent)
                     break;
                 }
             });
-    if (daemon_.start()) {
+    auto savedProfile = vault_.loadConversation(QStringLiteral("__profile"));
+    if (!savedProfile.isEmpty())
+        assistedConnection_ = savedProfile.first().toMap().value("network").toMap().value("assistedConnection",true).toBool();
+    // Password login and assisted chat do not need Jami. Reinitializing its
+    // native engine on every account/background handover blocked the GUI.
+    if (!assistedConnection_ && daemon_.start()) {
         accountId_ = daemon_.createLocalIdentity(tr("我的设备"));
         inviteCode_ = daemon_.inviteCode(accountId_);
         networkStatus_ = accountId_.isEmpty() ? tr("创建本机身份失败")
@@ -737,7 +825,6 @@ MessengerController::MessengerController(QObject* parent)
         if (!inviteCode_.isEmpty() && listeningPort_ > 0) identityRefresh_->stop();
     });
     if (!accountId_.isEmpty()) identityRefresh_->start();
-    auto savedProfile = vault_.loadConversation(QStringLiteral("__profile"));
     bool recoveredEmptyProfile = false;
     if (savedProfile.isEmpty() && vault_.hasConversation(QStringLiteral("__profile"))) {
         recoveredEmptyProfile = vault_.recoverEmptyConversation(QStringLiteral("__profile"),
@@ -765,7 +852,7 @@ MessengerController::MessengerController(QObject* parent)
             directEndpoint_ = numericEndpointList(profile.value(QStringLiteral("directEndpoint")).toString());
             contacts_ = profile.value(QStringLiteral("contacts")).toList();
             leftGroups_=profile.value("leftGroups").toStringList();
-            for(auto& value:contacts_){auto row=value.toMap();if(row.value("transport")=="relay"){row.insert("group",!row.value("groupId").toString().isEmpty());value=row;}}
+            for(auto& value:contacts_){auto row=value.toMap();if(row.value("transport")=="relay"){row.insert("group",!row.value("groupId").toString().isEmpty());if(row.value("group").toBool() && row.value("ownerId").toString().isEmpty())row.insert("ownerId",RelayClient::idForPublicKey(RelayClient::publicKeyFromCode(row.value("members").toList().value(0).toString())));value=row;}}
             const auto network = profile.value(QStringLiteral("network")).toMap();
             assistedConnection_ = network.value(QStringLiteral("assistedConnection"), true).toBool();
             relayEndpoint_ = network.value(QStringLiteral("relayEndpoint")).toString();
@@ -852,7 +939,10 @@ MessengerController::MessengerController(QObject* parent)
         if (!pendingGroupRequests_.contains(it.key())) pendingGroupRequests_.append(it.key());
     refreshNearbyPeers();
     activeContactId_ = contacts_.isEmpty() ? QString() : contacts_.first().toMap().value(QStringLiteral("id")).toString();
-    if (!activeContactId_.isEmpty()) messages_ = vault_.loadConversation(activeContactId_);
+    if (!activeContactId_.isEmpty()) {
+        messages_ = vault_.loadConversation(activeContactId_);
+        if(!messages_.isEmpty())for(auto& value:contacts_){auto row=value.toMap();if(row.value("id")!=activeContactId_ || row.contains("lastMessage"))continue;const auto latest=messages_.last().toMap();row.insert("lastMessage",latest.value("body").toString().left(120));row.insert("lastMessageTime",latest.value("time"));value=row;}
+    }
     if (expiredQuickTunnel) saveProfile();
     relay_.enableDirectory(!profileName_.isEmpty());
     callDeadline_.setSingleShot(true);
@@ -860,29 +950,48 @@ MessengerController::MessengerController(QObject* parent)
     callHeartbeat_.setInterval(3000);
     connect(&callHeartbeat_, &QTimer::timeout, this, [this] {
         if (callState_ == "idle") return;
+        if(!callGroupId_.isEmpty()){
+            const auto now=QDateTime::currentMSecsSinceEpoch();
+            for(auto it=callParticipants_.begin();it!=callParticipants_.end();++it)if(it->accepted && now-it->lastSeen>15000){it->accepted=false;it->frames.clear();emit voiceChanged();}
+            if(callState_=="active" && callParticipants()==1){endCall();return;}
+            sendCallEvent(QJsonObject{{"type","call_ping"},{"nonce",QUuid::createUuid().toString(QUuid::WithoutBraces)}});return;
+        }
         callPing_ = QUuid::createUuid().toString(QUuid::WithoutBraces);
         if (!relay_.sendLive(callKey_, QJsonObject {{"type","call_ping"},{"callId",callId_},{"nonce",callPing_}})) {
             endCall(); setError(tr("通话连接已断开，已自动挂断"));
         }
     });
     connect(&relay_, &RelayClient::peerUnavailable, this, [this](const QString& peer) {
+        if(!callGroupId_.isEmpty() && callParticipants_.contains(peer)){auto& participant=callParticipants_[peer];participant.accepted=false;participant.frames.clear();emit voiceChanged();if(callState_=="active" && callParticipants()==1)endCall();return;}
         if (callState_ != "idle" && peer == callPeerId_) { endCall(); setError(tr("对方已离线，语音通话已自动挂断")); }
     });
     connect(&relay_, &RelayClient::connectedChanged, this, [this](bool online) { if (!online && callState_ != "idle") endCall(); });
     if (auto* gui = qobject_cast<QGuiApplication*>(QCoreApplication::instance())) connect(gui, &QGuiApplication::applicationStateChanged, this, [this](Qt::ApplicationState state) {
-        if ((state == Qt::ApplicationSuspended || state == Qt::ApplicationHidden) && !voice_.permissionPending()) { finishVoice(false); endCall(); }
+        if ((state == Qt::ApplicationSuspended || state == Qt::ApplicationHidden) && !voice_.permissionPending() && callState_!="active") { finishVoice(false); if(callState_!="ringing")endCall(); }
     });
     connect(&voice_, &VoiceEngine::recordingChanged, this, [this](bool active) {
         recording_ = active && callState_ == "idle";
-        if (active && callState_ == "connecting") callState_ = "active";
+        if (active && callState_ == "connecting") {callState_ = "active";callStartedAt_=QDateTime::currentMSecsSinceEpoch();}
         emit voiceChanged();
     });
     connect(&voice_, &VoiceEngine::recordingReady, this, [this](const QByteArray& pcm) { sendMedia(pcm, "voice", recordingContact_); });
     connect(&voice_, &VoiceEngine::playbackChanged, this, &MessengerController::voiceChanged);
     connect(&voice_, &VoiceEngine::errorOccurred, this, [this](const QString& reason) { finishVoice(false); endCall(); setError(reason); });
     connect(&voice_, &VoiceEngine::pcmReady, this, [this](const QByteArray& pcm) {
-        if (callState_ == "active") relay_.sendLive(callKey_, QJsonObject {{"type", "call_audio"}, {"callId", callId_}, {"seq", callSequence_++}, {"data", QString::fromLatin1(pcm.toBase64())}});
+        if (callState_ == "active") sendCallEvent(QJsonObject {{"type", "call_audio"}, {"seq", callSequence_++}, {"data", QString::fromLatin1(pcm.toBase64())}},true);
     });
+    callMix_.setInterval(100);
+    connect(&callMix_,&QTimer::timeout,this,[this]{
+        if(callState_!="active" || callGroupId_.isEmpty())return;
+        QList<QByteArray> frames;for(auto& peer:callParticipants_)if(peer.accepted && !peer.frames.isEmpty())frames.append(peer.frames.takeFirst());
+        const auto pcm=VoiceEngine::mixFrames(frames);if(!pcm.isEmpty())voice_.play(pcm,true);
+    });
+    callMix_.start();
+    const auto incoming=vault_.loadConversation("__incoming_call");
+    if(!incoming.isEmpty()){
+        const auto row=incoming.first().toMap();const auto key=RelayClient::publicKeyFromCode(row.value("code").toString());
+        receiveCall(RelayClient::idForPublicKey(key),key,QJsonObject::fromVariantMap(row.value("offer").toMap()));
+    }
 }
 
 MessengerController::~MessengerController()
@@ -905,10 +1014,12 @@ bool MessengerController::sendMedia(const QByteArray& data, const QString& kind,
     if ((!isFile && data.isEmpty()) || data.size() > (isFile?2*1024*1024:1920000)) { setError(tr("文件为空或超过允许大小（文件 2 MB，语音/图片约 1.8 MB）")); return false; }
     const auto key = RelayClient::publicKeyFromCode(target.value("relayPublic").toString());
     const auto id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    const auto sentAt=QDateTime::currentMSecsSinceEpoch();
     QList<QJsonObject> packets;
     const auto count = qMax(1,int((data.size() + 12287) / 12288));
     const auto hash = QString::fromLatin1(QCryptographicHash::hash(data, QCryptographicHash::Sha256).toHex());
     for (int i = 0; i < count; ++i) packets.append(QJsonObject {{"type", "file_chunk"}, {"mediaKind", kind}, {"fileId", id}, {"name", kind == "voice" ? "voice.pcm" : kind=="photo" ? "photo.jpg" : "sticker.png"}, {"size", int(data.size())}, {"count", count}, {"index", i}, {"sha256", hash}, {"data", QString::fromLatin1(data.mid(i * 12288, 12288).toBase64(QByteArray::Base64UrlEncoding))}});
+    for(auto& packet:packets)packet.insert("sentAt",sentAt);
     if(isFile)for(auto& packet:packets){packet.remove("mediaKind");packet.insert("name",QFileInfo(fileName).fileName().left(180));}
     QStringList packetIds;
     if (target.value("group").toBool()) {
@@ -924,13 +1035,13 @@ bool MessengerController::sendMedia(const QByteArray& data, const QString& kind,
         }
         if (!sent) { setError(tr("群里没有其他成员")); return false; }
     } else {packetIds=relay_.sendBatch(key, packets);if(packetIds.size()!=count){setError(tr("文件或媒体未能保存到发送队列"));return false;}}
-    const bool saved=storeMessageForContact(contactId, QVariantMap {{"body", isFile?tr("文件：%1").arg(QFileInfo(fileName).fileName()):kind == "voice" ? tr("语音 %1 秒").arg(qMax(1, data.size()/32000)) : kind=="photo" ? tr("[照片]") : tr("[表情图片]")}, {"kind", isFile?"file-offer":kind}, {"outgoing", true}, {"fileData", QString::fromLatin1(data.toBase64())},{"fileId",id},{"name",QFileInfo(fileName).fileName()},{"packetIds",packetIds},{"delivery",tr("已排队")}, {"time", QDateTime::currentDateTime().toString("HH:mm")}});
+    const bool saved=storeMessageForContact(contactId, QVariantMap {{"body", isFile?tr("文件：%1").arg(QFileInfo(fileName).fileName()):kind == "voice" ? tr("语音 %1 秒").arg(qMax(1, data.size()/32000)) : kind=="photo" ? tr("[照片]") : tr("[表情图片]")}, {"kind", isFile?"file-offer":kind}, {"outgoing", true}, {"fileData", QString::fromLatin1(data.toBase64())},{"fileId",id},{"messageId",id},{"sentAt",sentAt},{"name",QFileInfo(fileName).fileName()},{"packetIds",packetIds},{"delivery",tr("已排队")}, {"time", QDateTime::currentDateTime().toString("HH:mm")}});
     if(!saved)setError(tr("媒体已排队，但本机聊天记录未能保存，请勿重复发送"));return saved;
 }
 bool MessengerController::sendPhoto(const QString& path) {
     const auto local=QUrl(path).isLocalFile()?QUrl(path).toLocalFile():path;
     QImageReader reader(local); reader.setAutoTransform(true); const auto dims=reader.size();
-    if (!dims.isValid() || dims.width()>30000 || dims.height()>30000 || QFileInfo(local).size()>20*1024*1024) { setError(tr("照片无法读取或超过 20 MB")); return false; }
+    if (!dims.isValid() || dims.width()>30000 || dims.height()>30000) { setError(tr("照片格式无法读取或像素尺寸过大，请用文件方式发送原图")); return false; }
     reader.setScaledSize(dims.scaled(1600,1600,Qt::KeepAspectRatio)); auto image=reader.read();
     if (image.isNull()) { setError(tr("照片格式不支持，请换一张照片")); return false; }
     image=image.scaled(1600,1600,Qt::KeepAspectRatio,Qt::SmoothTransformation);
@@ -951,7 +1062,11 @@ void MessengerController::choosePhoto(bool camera) {
 #endif
 }
 void MessengerController::suspendForBackground() {
-    endCall(); finishVoice(false);
+    // Transfer ringing through the encrypted vault, without rejecting it when
+    // the user taps a notification and the service releases its writer lock.
+    if(callState_=="ringing"){callDeadline_.stop();callHeartbeat_.stop();callState_="idle";callId_.clear();callKey_.clear();callPeerId_.clear();}
+    else endCall();
+    finishVoice(false);
     if (identityRefresh_) identityRefresh_->stop();
     if (pendingRefresh_) pendingRefresh_->stop();
     relay_.setEnabled(false);
@@ -1018,40 +1133,84 @@ bool MessengerController::sendScreenshot() {
 void MessengerController::startCall() {
     const auto entry = activeEntry();
     if (callState_ != "idle" || recording_) { setError(tr("请先结束当前录音或通话")); return; }
-    if (!assistedConnection_ || !relay_.isConnected() || !entry.value("ready").toBool() || entry.value("group").toBool() || entry.value("transport") != "relay") { setError(tr("语音通话需要辅助连接已接通，并选择已确认私聊好友")); return; }
+    if (!assistedConnection_ || !relay_.isConnected() || !entry.value("ready").toBool() || entry.value("transport") != "relay") { setError(tr("语音通话需要连接已接通，并选择已确认好友或群聊")); return; }
+    callGroupId_=entry.value("groupId").toString();callParticipants_.clear();
+    if(entry.value("group").toBool()){
+        const auto members=entry.value("members").toList();if(callGroupId_.isEmpty() || members.size()>6){callGroupId_.clear();setError(tr("当前多人语音支持最多 6 人的辅助连接群聊"));return;}
+        for(const auto& code:members){const auto key=RelayClient::publicKeyFromCode(code.toString());const auto id=RelayClient::idForPublicKey(key);if(id!=relay_.identityId() && !id.isEmpty())callParticipants_.insert(id,CallParticipant{key});}
+        if(callParticipants_.isEmpty()){callGroupId_.clear();setError(tr("群聊没有其他成员"));return;}
+    }
     callKey_ = RelayClient::publicKeyFromCode(entry.value("relayPublic").toString()); callPeerId_ = RelayClient::idForPublicKey(callKey_);
     callId_ = QUuid::createUuid().toString(QUuid::WithoutBraces); callPeerName_ = entry.value("name").toString(); callState_ = "dialing";
+    callContactId_=activeContactId_;callStartedAt_=0;
     callSequence_ = 0; receivedSequence_ = -1;
-    if (!relay_.sendLive(callKey_, QJsonObject {{"type","call_offer"},{"callId",callId_},{"expires",QDateTime::currentSecsSinceEpoch()+45}})) { endCall(); setError(tr("通话请求未能发出")); return; }
+    if (!sendCallEvent(QJsonObject {{"type","call_offer"},{"expires",QDateTime::currentSecsSinceEpoch()+45}})) { endCall(); setError(tr("通话请求未能发出")); return; }
     callDeadline_.start(45000); callHeartbeat_.start(); emit voiceChanged();
 }
 void MessengerController::answerCall() {
     if (callState_ != "ringing") return;
-    if (!relay_.sendLive(callKey_,QJsonObject {{"type","call_accept"},{"callId",callId_}})) { endCall(); setError(tr("无法接通通话")); return; }
+    if(!callGroupId_.isEmpty() && callParticipants_.contains(callPeerId_)){auto& peer=callParticipants_[callPeerId_];peer.accepted=true;peer.lastSeen=QDateTime::currentMSecsSinceEpoch();}
+    if (!sendCallEvent(QJsonObject {{"type","call_accept"}})) { endCall(); setError(tr("无法接通通话")); return; }
     callState_ = "connecting"; callDeadline_.start(15000); emit voiceChanged(); voice_.capture(true);
 }
 void MessengerController::endCall() {
     if (callState_ == "idle") return;
-    relay_.sendLive(callKey_,QJsonObject {{"type","call_end"},{"callId",callId_}});
+    sendCallEvent(QJsonObject {{"type","call_end"}});
     callDeadline_.stop(); callHeartbeat_.stop(); callPing_.clear();
-    callState_ = "idle"; callId_.clear(); callKey_.clear(); callPeerId_.clear();
+    const auto seconds=callDuration();
+    if(!callContactId_.isEmpty())appendMessageForContact(callContactId_,callStartedAt_>0?tr("语音通话 · %1:%2").arg(seconds/60).arg(seconds%60,2,10,QChar('0')):tr("语音通话 · 未接通"),true,"call");
+    vault_.saveConversation("__incoming_call",{});
+    callState_ = "idle"; callId_.clear(); callKey_.clear(); callPeerId_.clear();callStartedAt_=0;callContactId_.clear();
+    callGroupId_.clear();callParticipants_.clear();
     voice_.stopCapture(false); voice_.stopPlayback(); emit voiceChanged();
+}
+int MessengerController::callDuration() const {return callStartedAt_>0?int(qMax<qint64>(0,QDateTime::currentMSecsSinceEpoch()-callStartedAt_)/1000):0;}
+int MessengerController::callParticipants() const {int count=callState_=="active"?1:0;for(const auto& peer:callParticipants_)count+=peer.accepted;return callGroupId_.isEmpty()?(callState_=="active"?2:0):count;}
+bool MessengerController::sendCallEvent(QJsonObject event,bool acceptedOnly) {
+    event.insert("callId",callId_);if(callGroupId_.isEmpty())return relay_.sendLive(callKey_,event);
+    event.insert("groupId",callGroupId_);bool sent=false;
+    for(auto it=callParticipants_.begin();it!=callParticipants_.end();++it)if(!acceptedOnly || it->accepted)sent=relay_.sendLive(it->key,event) || sent;
+    return sent;
 }
 void MessengerController::receiveCall(const QString& sender, const QByteArray& key, const QJsonObject& msg) {
     const auto type = msg.value("type").toString(), id = msg.value("callId").toString();
     if (id.size()!=36) return;
     if (type == "call_offer") {
         const auto expires = msg.value("expires").toInteger(), now = QDateTime::currentSecsSinceEpoch();
-        if (expires < now || expires > now+60 || callState_ != "idle" || recording_) return;
+        if (expires <= now || expires > now+60 || callState_ != "idle" || recording_) return;
         for (const auto& item : contacts_) {
             const auto entry = item.toMap();
-            if (entry.value("uri") != sender || entry.value("transport") != "relay" || !entry.value("ready").toBool() || entry.value("group").toBool()) continue;
+            const auto groupId=msg.value("groupId").toString();
+            if(entry.value("transport")!="relay" || !entry.value("ready").toBool())continue;
+            if(!groupId.isEmpty()){
+                const auto members=entry.value("members").toList();if(!entry.value("group").toBool() || entry.value("groupId").toString()!=groupId || members.size()>6)continue;
+                bool member=false;for(const auto& code:members)member|=RelayClient::idForPublicKey(RelayClient::publicKeyFromCode(code.toString()))==sender;if(!member)continue;
+                callParticipants_.clear();for(const auto& code:members){const auto peerKey=RelayClient::publicKeyFromCode(code.toString());const auto peerId=RelayClient::idForPublicKey(peerKey);if(peerId!=relay_.identityId() && !peerId.isEmpty())callParticipants_.insert(peerId,CallParticipant{peerKey});}
+                callGroupId_=groupId;
+            }else{if(entry.value("uri")!=sender || entry.value("group").toBool())continue;callGroupId_.clear();callParticipants_.clear();}
             callId_ = id; callKey_ = key; callPeerId_ = sender; callPeerName_ = entry.value("name").toString(); callState_ = "ringing"; callSequence_ = 0; receivedSequence_ = -1;
-            callDeadline_.start(45000); callHeartbeat_.start(); emit voiceChanged(); return;
+            callContactId_=entry.value("id").toString();callStartedAt_=0;
+            if(!vault_.saveConversation("__incoming_call",{QVariantMap{{"code","SD1-"+QString::fromLatin1(key.toBase64(QByteArray::Base64UrlEncoding|QByteArray::OmitTrailingEquals))},{"offer",msg.toVariantMap()}}})) {callState_="idle";setError(tr("来电无法保存，请检查本机空间"));return;}
+            emit incomingNotice(tr("语音来电"),callPeerName_+tr(" 邀请你通话，点击通知打开应用接听"));
+            callDeadline_.start(int(qMin<qint64>(45,expires-now)*1000)); callHeartbeat_.start(); emit voiceChanged(); return;
         }
         return;
     }
-    if (sender != callPeerId_ || id != callId_ || callState_ == "idle") return;
+    if(!callGroupId_.isEmpty()){
+        if(id!=callId_ || callState_=="idle" || msg.value("groupId").toString()!=callGroupId_ || !callParticipants_.contains(sender))return;
+        auto& peer=callParticipants_[sender];
+        if(type=="call_accept") {const bool newlyJoined=!peer.accepted;peer.accepted=true;peer.lastSeen=QDateTime::currentMSecsSinceEpoch();emit voiceChanged();if(newlyJoined && callState_=="active")relay_.sendLive(key,QJsonObject{{"type","call_accept"},{"callId",id},{"groupId",callGroupId_}});if(callState_=="dialing"){callState_="connecting";callDeadline_.start(15000);voice_.capture(true);}return;}
+        if(type=="call_end"){peer.accepted=false;peer.frames.clear();emit voiceChanged();if(callState_=="active" && callParticipants()==1)endCall();else if(callState_=="ringing" && sender==callPeerId_)endCall();return;}
+        if(!peer.accepted)return;
+        peer.lastSeen=QDateTime::currentMSecsSinceEpoch();
+        if(type=="call_ping"){relay_.sendLive(key,QJsonObject{{"type","call_pong"},{"callId",id},{"groupId",callGroupId_},{"nonce",msg.value("nonce")}});return;}
+        if(type=="call_pong"){if(callState_=="active")callDeadline_.start(15000);return;}
+        if(type=="call_audio" && callState_=="active"){
+            const auto sequence=msg.value("seq").toInt(-1);const auto pcm=QByteArray::fromBase64(msg.value("data").toString().toLatin1());
+            if(sequence<=peer.sequence || pcm.size()!=3200)return;peer.sequence=sequence;peer.frames.append(pcm);while(peer.frames.size()>3)peer.frames.removeFirst();callDeadline_.start(15000);return;
+        }return;
+    }
+    if (sender != callPeerId_ || id != callId_ || callState_ == "idle" || !msg.value("groupId").toString().isEmpty()) return;
     if (type == "call_ping") {
         const auto nonce = msg.value("nonce").toString();
         if (nonce.size() == 36) relay_.sendLive(key,QJsonObject {{"type","call_pong"},{"callId",id},{"nonce",nonce}});
@@ -1430,12 +1589,46 @@ void MessengerController::selectContact(const QString& contactId)
     bool found = false;
     for (const auto& row : contacts_) found |= row.toMap().value(QStringLiteral("id")).toString() == contactId;
     if (!found) return;
-    if (activeContactId_ == contactId)
+    if (activeContactId_ == contactId) {
+        setThreadVisible(threadVisible_);
         return;
+    }
     activeContactId_ = contactId;
     messages_ = vault_.loadConversation(activeContactId_);
     emit activeContactChanged();
     emit messagesChanged();
+    setThreadVisible(threadVisible_);
+}
+void MessengerController::setThreadVisible(bool visible) {
+    threadVisible_=visible;
+    if(!visible || !qobject_cast<QGuiApplication*>(QCoreApplication::instance()) || QGuiApplication::applicationState()!=Qt::ApplicationActive)return;
+    for(auto& value:contacts_){auto row=value.toMap();if(row.value("id")==activeContactId_ && row.value("unread").toInt()>0){row.insert("unread",0);value=row;saveProfile();emit contactsChanged();break;}}
+}
+bool MessengerController::withdrawMessage(int index) {
+    if(index<0 || index>=messages_.size())return false;auto msg=messages_[index].toMap();const auto row=activeEntry();
+    const auto id=msg.value("messageId",msg.value("fileId")).toString();const auto sentAt=msg.value("sentAt").toLongLong();
+    if(!msg.value("outgoing").toBool() || msg.value("kind")=="withdrawn" || id.size()!=36 || row.value("transport")!="relay" || !assistedConnection_){setError(tr("只能撤回本版本发送的辅助连接消息"));return false;}
+    if(sentAt<=0 || QDateTime::currentMSecsSinceEpoch()-sentAt>120000){setError(tr("消息发送超过两分钟，不能撤回"));return false;}
+    const auto event=QJsonObject{{"type","withdraw"},{"messageId",id},{"file",msg.value("kind")=="file-offer"},{"groupId",row.value("groupId").toString()}};
+    if(row.value("group").toBool()){for(const auto& code:row.value("members").toList()){const auto key=RelayClient::publicKeyFromCode(code.toString());if(RelayClient::idForPublicKey(key)!=relay_.identityId() && relay_.send(key,event).isEmpty()){setError(tr("撤回指令无法排队，请重试"));return false;}}}
+    else if(relay_.send(RelayClient::publicKeyFromCode(row.value("relayPublic").toString()),event).isEmpty()){setError(tr("撤回指令无法排队，请重试"));return false;}
+    files_.cancelFile(id);const auto previous=messages_;msg.insert("body",tr("你撤回了一条消息"));msg.insert("kind","withdrawn");msg.remove("fileData");msg.remove("filePath");msg.remove("fileId");messages_[index]=msg;
+    if(!vault_.saveConversation(activeContactId_,messages_)){messages_=previous;setError(tr("撤回已排队，但本机显示无法保存"));return false;}emit messagesChanged();return true;
+}
+bool MessengerController::setContactRemark(const QString& remark){
+    if(activeIsGroup() || remark.size()>64){setError(tr("好友备注最多 64 字"));return false;}
+    for(auto& value:contacts_){auto row=value.toMap();if(row.value("id")!=activeContactId_)continue;const auto previous=value;const auto name=remark.trimmed();row.insert("hasRemark",!name.isEmpty());row.insert("name",name.isEmpty()?row.value("peerName",row.value("name")).toString():name);value=row;if(!saveProfile()){value=previous;setError(tr("备注无法保存"));return false;}emit contactsChanged();emit activeContactChanged();return true;}return false;
+}
+bool MessengerController::setContactPinned(bool pinned){
+    for(auto& value:contacts_){auto row=value.toMap();if(row.value("id")!=activeContactId_)continue;const auto previous=value;row.insert("pinned",pinned);value=row;if(!saveProfile()){value=previous;setError(tr("置顶设置无法保存"));return false;}emit contactsChanged();emit activeContactChanged();return true;}return false;
+}
+bool MessengerController::clearActiveHistory(){
+    if(activeContactId_.isEmpty() || !vault_.saveConversation(activeContactId_,{})){setError(tr("本机记录无法清空"));return false;}
+    messages_.clear();for(auto& value:contacts_){auto row=value.toMap();if(row.value("id")==activeContactId_){row.remove("lastMessage");row.remove("lastMessageTime");row.insert("unread",0);value=row;}}
+    saveProfile();emit messagesChanged();emit contactsChanged();return true;
+}
+bool MessengerController::setContactMuted(bool muted) {
+    for(auto& value:contacts_){auto row=value.toMap();if(row.value("id")!=activeContactId_)continue;const auto previous=value;row.insert("muted",muted);value=row;if(!saveProfile()){value=previous;setError(tr("免打扰设置无法保存"));return false;}emit contactsChanged();emit activeContactChanged();return true;}return false;
 }
 bool MessengerController::copyMessage(int index) {
     if(index<0 || index>=messages_.size())return false;
@@ -1482,9 +1675,10 @@ bool MessengerController::removeActiveContact() {
     if(!saveProfile()){contacts_=previous;leftGroups_=previousLeft;setError(tr("删除未能保存，原会话已保留"));return false;}
     if(removed.value("transport")=="relay" && !relay_.cancelContactPackets(removed.value("uri").toString(),groupId)){contacts_=previous;leftGroups_=previousLeft;saveProfile();setError(tr("待发送申请或消息无法取消，尚未删除"));return false;}
     if(!groupId.isEmpty())for(const auto& code:removed.value("members").toList()){const auto key=RelayClient::publicKeyFromCode(code.toString());if(RelayClient::idForPublicKey(key)!=relay_.identityId())relay_.send(key,QJsonObject{{"type","group_leave"},{"groupId",groupId}});}
-    endCall();finishVoice(false);activeContactId_.clear();messages_.clear();emit contactsChanged();emit activeContactChanged();emit messagesChanged();return true;
+    files_.cancelContact(id);endCall();finishVoice(false);activeContactId_.clear();messages_.clear();emit contactsChanged();emit activeContactChanged();emit messagesChanged();return true;
 }
 bool MessengerController::renameGroup(const QString& name) {
+    if(!canManageGroup()){setError(tr("只有群主或管理员可以修改群名称"));return false;}
     if(!activeIsGroup() || name.trimmed().isEmpty() || name.size()>64)return false;
     const auto previous=contacts_;
     for(auto& value:contacts_){auto row=value.toMap();if(row.value("id").toString()==activeContactId_){row.insert("name",name.trimmed());value=row;}}
@@ -1504,8 +1698,46 @@ void MessengerController::broadcastGroupMemberProfile(const QVariantMap& group) 
         relay_.send(key,QJsonObject{{"type","group_member_profile"},{"groupId",group.value("groupId").toString()},{"name",profileName_},{"avatar",profileAvatar_},{"nickname",group.value("myNickname",profileName_).toString()}});
     }
 }
+bool MessengerController::ownsGroup() const {
+    const auto group=activeEntry();const auto owner=group.value("ownerId",RelayClient::idForPublicKey(RelayClient::publicKeyFromCode(group.value("members").toList().value(0).toString()))).toString();
+    return activeIsGroup() && !owner.isEmpty() && owner==relay_.identityId();
+}
+bool MessengerController::canManageGroup() const {return ownsGroup() || (activeIsGroup() && activeEntry().value("admins").toStringList().contains(relay_.identityId()));}
+QVariantList MessengerController::groupMembers() const {
+    const auto group=activeEntry();QVariantList result;const auto profiles=group.value("memberProfiles").toMap();
+    const auto owner=group.value("ownerId",RelayClient::idForPublicKey(RelayClient::publicKeyFromCode(group.value("members").toList().value(0).toString()))).toString();
+    for(const auto& code:group.value("members").toList()) {
+        const auto id=RelayClient::idForPublicKey(RelayClient::publicKeyFromCode(code.toString()));if(id.isEmpty())continue;
+        auto profile=profiles.value(id).toMap();QString name=profile.value("nickname",profile.value("name")).toString();
+        if(id==relay_.identityId())name=group.value("myNickname",profileName_).toString();
+        if(name.isEmpty())for(const auto& value:contacts_){const auto peer=value.toMap();if(peer.value("uri")==id){name=peer.value("name").toString();break;}}
+        if(name.isEmpty())name=tr("群成员 %1").arg(id.left(6));
+        result.append(QVariantMap{{"id",id},{"name",name},{"owner",id==owner},{"admin",group.value("admins").toStringList().contains(id)}});
+    }return result;
+}
+void MessengerController::broadcastGroupEvent(const QVariantMap& group,QJsonObject event) {
+    event.insert("groupId",group.value("groupId").toString());
+    for(const auto& code:group.value("members").toList()){const auto key=RelayClient::publicKeyFromCode(code.toString());if(RelayClient::idForPublicKey(key)==relay_.identityId())continue;if(relay_.send(key,event).isEmpty())setError(tr("群设置已保存，但同步排队失败，请检查本机空间"));}
+}
+bool MessengerController::setGroupAnnouncement(const QString& text) {
+    if(!canManageGroup()){setError(tr("只有群主或管理员可以修改公告"));return false;}if(text.size()>2000){setError(tr("公告最多 2000 字"));return false;}
+    for(auto& value:contacts_){auto group=value.toMap();if(group.value("id")!=activeContactId_)continue;
+        const auto revision=qMax(QDateTime::currentMSecsSinceEpoch(),group.value("announcementRevision").toLongLong()+1);
+        const auto previous=value;group.insert("announcement",text);group.insert("announcementRevision",revision);value=group;
+        if(!saveProfile()){value=previous;return false;}broadcastGroupEvent(group,QJsonObject{{"type","group_announcement"},{"text",text},{"revision",revision}});emit contactsChanged();emit activeContactChanged();return true;
+    }return false;
+}
+bool MessengerController::setGroupAdministrator(const QString& memberId,bool enabled) {
+    if(!ownsGroup()){setError(tr("只有群主可以设置管理员"));return false;}bool found=false;for(const auto& value:groupMembers())if(value.toMap().value("id")==memberId && !value.toMap().value("owner").toBool())found=true;if(!found)return false;
+    for(auto& value:contacts_){auto group=value.toMap();if(group.value("id")!=activeContactId_)continue;
+        auto admins=group.value("admins").toStringList();admins.removeAll(memberId);if(enabled)admins.append(memberId);
+        const auto revision=qMax(QDateTime::currentMSecsSinceEpoch(),group.value("adminsRevision").toLongLong()+1);
+        const auto previous=value;group.insert("admins",admins);group.insert("adminsRevision",revision);value=group;
+        if(!saveProfile()){value=previous;return false;}broadcastGroupEvent(group,QJsonObject{{"type","group_admins"},{"admins",QJsonArray::fromStringList(admins)},{"revision",revision}});emit contactsChanged();emit activeContactChanged();return true;
+    }return false;
+}
 void MessengerController::chooseGroupAvatar() {
-    if(!activeIsGroup())return;
+    if(!canManageGroup()){setError(tr("只有群主或管理员可以修改群头像"));return;}
 #ifdef Q_OS_ANDROID
     const auto id=activeContactId_;
     if(!openAvatarGallery(this,[this,id](QString path,QString error){if(!error.isEmpty())setError(error);else if(!path.isEmpty()&&activeContactId_==id)setGroupAvatar(path);}))setError(tr("相册正在使用或无法打开，请检查系统相册权限"));
@@ -1514,6 +1746,7 @@ void MessengerController::chooseGroupAvatar() {
 #endif
 }
 bool MessengerController::setGroupAvatar(const QString& path) {
+    if(!canManageGroup()){setError(tr("只有群主或管理员可以修改群头像"));return false;}
     if(!activeIsGroup()||uid_.isEmpty()||!passwordConfigured())return false;
     const auto local=QUrl(path).isLocalFile()?QUrl(path).toLocalFile():path;
     QImageReader reader(local);const auto dims=reader.size();
@@ -1715,6 +1948,7 @@ bool MessengerController::createGroup(const QString& name, const QStringList& me
         entry.insert(QStringLiteral("group"), true);
         entry.insert(QStringLiteral("groupId"), groupId);
         entry.insert(QStringLiteral("members"), members);
+        entry.insert("ownerId",relay_.identityId());
         entry.insert(QStringLiteral("ready"), true);
         contacts_.append(entry);
         saveProfile(); emit contactsChanged(); selectContact(id);
@@ -1758,6 +1992,8 @@ bool MessengerController::createGroup(const QString& name, const QStringList& me
 
 bool MessengerController::sendMessage(const QString& body)
 {
+    const auto messageId=QUuid::createUuid().toString(QUuid::WithoutBraces);
+    const auto sentAt=QDateTime::currentMSecsSinceEpoch();
     const auto text = body.trimmed();
     if (text.isEmpty())
         return false;
@@ -1782,13 +2018,14 @@ bool MessengerController::sendMessage(const QString& body)
                     if (RelayClient::idForPublicKey(key) == relay_.identityId()) continue;
                     if (!relay_.send(key, QJsonObject {
                         {QStringLiteral("type"), QStringLiteral("group_text")},
+                        {"messageId",messageId},{"sentAt",sentAt},
                         {QStringLiteral("groupId"), current.value(QStringLiteral("groupId")).toString()},
                         {QStringLiteral("nickname"), current.value(QStringLiteral("myNickname"), profileName_).toString()},
                         {QStringLiteral("body"), text}
                     }).isEmpty()) ++queued;
                 }
                 if (queued == 0) { setError(tr("群消息未能保存到发送队列")); return false; }
-                appendMessage(text, true);
+                storeMessageForContact(activeContactId_,QVariantMap{{"body",text},{"outgoing",true},{"kind","text"},{"messageId",messageId},{"sentAt",sentAt},{"time",QDateTime::currentDateTime().toString("HH:mm")}});
                 return true;
             }
             if (!current.value(QStringLiteral("ready")).toBool()) {
@@ -1799,6 +2036,7 @@ bool MessengerController::sendMessage(const QString& body)
                 current.value(QStringLiteral("relayPublic")).toString());
             const auto packetId = relay_.send(peerKey, QJsonObject {
                 {QStringLiteral("type"), QStringLiteral("text")},
+                {"messageId",messageId},{"sentAt",sentAt},
                 {QStringLiteral("body"), text}
             });
             if (packetId.isEmpty()) {
@@ -1810,6 +2048,7 @@ bool MessengerController::sendMessage(const QString& body)
                 {QStringLiteral("outgoing"), true},
                 {QStringLiteral("kind"), QStringLiteral("text")},
                 {QStringLiteral("packetId"), packetId},
+                {"messageId",messageId},{"sentAt",sentAt},
                 {QStringLiteral("delivery"), tr("等待对方收到")},
                 {QStringLiteral("time"), QDateTime::currentDateTime().toString(QStringLiteral("HH:mm"))}
             });
@@ -1856,6 +2095,12 @@ bool MessengerController::queueFile(const QString& path)
             if (!assistedConnection_) {
                 setError(tr("此会话使用辅助连接。请先在本机账号中切换到辅助连接，再发送文件。"));
                 return false;
+            }
+            if(QFileInfo(localPath).size()>2*1024*1024){
+                if(!current.value("ready").toBool()){setError(tr("请先确认好友关系"));return false;}
+                QList<QByteArray> recipients;if(current.value("group").toBool()){for(const auto& code:current.value("members").toList()){const auto key=RelayClient::publicKeyFromCode(code.toString());if(RelayClient::idForPublicKey(key)!=relay_.identityId())recipients.append(key);}}
+                else recipients.append(RelayClient::publicKeyFromCode(current.value("relayPublic").toString()));
+                if(!files_.sendFile(localPath,activeContactId_,current.value("groupId").toString(),recipients)){setError(tr("文件无法读取或发送进度无法保存，请检查本机空间"));return false;}return true;
             }
             if (current.value(QStringLiteral("group")).toBool()) {
                 QFile input(localPath);
@@ -1920,6 +2165,13 @@ bool MessengerController::downloadFile(const QString& interactionId, const QStri
                 const auto message = value.toMap();
                 if (message.value(QStringLiteral("fileId")).toString() != fileId ||
                     message.value(QStringLiteral("kind")).toString() != QStringLiteral("file-offer")) continue;
+                if(!message.value("streamTransfer").toString().isEmpty()){
+                    if(!files_.exportFile(message.value("streamTransfer").toString(),localPath)){setError(tr("文件正在保存或加密文件无法读取，请稍后重试"));return false;}
+#ifdef Q_OS_ANDROID
+                    if(androidDocument)androidDownloadDestinations_.insert(localPath,destination);
+#endif
+                    return true;
+                }
                 const auto data = QByteArray::fromBase64(message.value(QStringLiteral("fileData")).toString().toLatin1());
                 QSaveFile output(localPath);
                 if (!output.open(QIODevice::WriteOnly) || output.write(data) != data.size() || !output.commit()) {
@@ -2068,6 +2320,7 @@ bool MessengerController::acceptGroupRequest(const QString& conversationId)
         entry.insert(QStringLiteral("group"), true);
         entry.insert(QStringLiteral("groupId"), conversationId);
         entry.insert(QStringLiteral("members"), invite.value(QStringLiteral("members")).toList());
+        entry.insert("ownerId",RelayClient::idForPublicKey(RelayClient::publicKeyFromCode(invite.value("members").toList().value(0).toString())));
         entry.insert(QStringLiteral("ready"), true);
         contacts_.append(entry);
         saveProfile(); emit pendingGroupRequestsChanged(); emit contactsChanged(); selectContact(id);
@@ -2134,6 +2387,7 @@ bool MessengerController::setAssistedConnection(bool enabled)
         setError(tr("辅助中继尚未部署，暂时不能切换到辅助连接。"));
         return false;
     }
+    if (!enabled && accountId_.isEmpty()) retryIdentity();
     // Relay transport uses its own persistent X25519 identity. Never gate it
     // on Jami registration. Disabling relay must also work without the engine.
     if (!accountId_.isEmpty()) daemon_.configurePrivateNetwork(accountId_, networkConfig_, false);
@@ -2151,7 +2405,7 @@ bool MessengerController::setAssistedConnection(bool enabled)
     emit peerProbeStatusChanged();
     relay_.setEnabled(enabled);
     networkStatus_ = enabled ? tr("辅助连接正在建立 — 通过你的加密中继")
-                             : tr("纯直连 — 不使用公共引导或中继");
+                             : accountId_.isEmpty()?tr("直连内核未就绪，模式已保存，不会使用中继"):tr("纯直连 — 不使用公共引导或中继");
     emit assistedConnectionChanged();
     emit inviteCodeChanged();
     emit pairingCodeChanged();
@@ -2231,15 +2485,25 @@ bool MessengerController::storeMessageForContact(const QString& contactId, const
         stored.append(message);
         if (!vault_.saveConversation(contactId, stored)) return false;
     }
-    if (contactId != "welcome" && !message.value("outgoing").toBool())
-        emit incomingNotice(contactName(contactId),message.value("body").toString().left(120));
+    const bool incoming=!message.value("outgoing").toBool();
+    bool muted=false;
+    const auto kind=message.value("kind").toString();
+    const auto preview=kind=="sticker"?tr("[表情]"):kind=="photo"?tr("[照片]"):kind=="voice"?tr("[语音]"):message.value("body").toString().left(120);
+    const bool reading=threadVisible_ && contactId==activeContactId_ && qobject_cast<QGuiApplication*>(QCoreApplication::instance()) && QGuiApplication::applicationState()==Qt::ApplicationActive;
+    for(auto& value:contacts_){auto row=value.toMap();if(row.value("id")!=contactId)continue;row.insert("lastMessage",preview);row.insert("lastMessageTime",message.value("time"));
+        if(incoming && !reading)row.insert("unread",qMin(9999,row.value("unread").toInt()+1));
+        muted=row.value("muted").toBool();value=row;break;
+    }
+    saveProfile();emit contactsChanged();
+    if (contactId != "welcome" && incoming && !muted)
+        emit incomingNotice(contactName(contactId),preview);
     return true;
 }
 
 bool MessengerController::saveProfile()
 {
     if (!profileReadable_) return false;
-    return vault_.saveConversation(QStringLiteral("__profile"),
+    const bool saved=vault_.saveConversation(QStringLiteral("__profile"),
                             {QVariantMap {{QStringLiteral("accountId"), accountId_},
                                           {QStringLiteral("profileName"), profileName_},
                                           {QStringLiteral("avatar"), profileAvatar_},
@@ -2259,6 +2523,15 @@ bool MessengerController::saveProfile()
                                                {QStringLiteral("turnPort"), networkConfig_.turnPort},
                                                {QStringLiteral("turnUser"), networkConfig_.turnUser},
                                                {QStringLiteral("turnPassword"), networkConfig_.turnPassword}}}}});
+    if(saved && !uid_.isEmpty()){
+        QVariantList portable;
+        for(const auto& value:contacts_){auto row=value.toMap();if(row.value("transport")!="relay")continue;
+            for(const auto* field:{"lastMessage","lastMessageTime","unread","avatar","memberProfiles","requestPacketId"})row.remove(QString::fromLatin1(field));
+            portable.append(row);
+        }
+        relay_.setContactBackup(QVariantMap{{"contacts",portable},{"leftGroups",leftGroups_},{"avatar",profileAvatar_}});
+    }
+    return saved;
 }
 
 void MessengerController::updateMessageDelivery(const QString& packetId,const QString& state) {
