@@ -12,17 +12,17 @@ adb shell am start -W -n io.p2pmessenger.app/org.qtproject.qt.android.bindings.Q
   --es p2p_test_peer "${RECEIVER_INVITE_CODE:?}"
 for attempt in $(seq 1 90); do
   adb logcat -d > runtime-evidence/logcat.txt
-  if rg -q 'P2P_ANDROID_FRIEND_FLOW=PASS' runtime-evidence/logcat.txt; then
-    rg 'P2P_ANDROID_' runtime-evidence/logcat.txt
+  if grep -q 'P2P_ANDROID_FRIEND_FLOW=PASS' runtime-evidence/logcat.txt; then
+    grep 'P2P_ANDROID_' runtime-evidence/logcat.txt
     adb exec-out screencap -p > runtime-evidence/screen.png
     exit 0
   fi
-  if rg -q 'P2P_ANDROID_.*FAIL|Fatal signal|FATAL EXCEPTION' runtime-evidence/logcat.txt; then
+  if grep -Eq 'P2P_ANDROID_.*FAIL|Fatal signal|FATAL EXCEPTION' runtime-evidence/logcat.txt; then
     break
   fi
   sleep 2
 done
 adb exec-out screencap -p > runtime-evidence/screen.png || true
-rg 'P2P_ANDROID_|SSL|openssl|crypto|Keystore|JNI|Exception|Fatal' runtime-evidence/logcat.txt || true
+grep -E 'P2P_ANDROID_|SSL|openssl|crypto|Keystore|JNI|Exception|Fatal' runtime-evidence/logcat.txt || true
 echo 'Android APK runtime acceptance failed'
 exit 1
