@@ -5,6 +5,9 @@
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QJsonParseError>
+#include <QUuid>
+#include <QLockFile>
 #include <QRandomGenerator>
 #include <QSaveFile>
 #include <QStandardPaths>
@@ -313,11 +316,40 @@ QByteArray LocalVault::decrypt(const QByteArray& encrypted) const
 
 QVariantList LocalVault::loadConversation(const QString& conversationId) const
 {
-    QFile input(conversationPath(conversationId));
-    if (!input.open(QIODevice::ReadOnly)) return {};
-    const auto plain = decrypt(input.readAll());
-    const auto document = QJsonDocument::fromJson(plain);
-    return document.isArray() ? document.array().toVariantList() : QVariantList {};
+    return readConversationFile(conversationPath(conversationId));
+}
+
+QVariantList LocalVault::readConversationFile(const QString& path) const
+{
+    if (!isReady()) return {};
+    error_.clear();
+    QFile input(path);
+    if (!input.exists()) return {};
+    if (!input.open(QIODevice::ReadOnly)) {
+        error_ = QStringLiteral("无法读取本地加密文件：%1").arg(input.errorString());
+        return {};
+    }
+    const auto encrypted = input.readAll();
+    if (input.error() != QFileDevice::NoError) {
+        error_ = QStringLiteral("读取本地加密文件失败：%1").arg(input.errorString());
+        return {};
+    }
+    if (encrypted.isEmpty()) {
+        error_ = QStringLiteral("本地加密文件为 0 字节，不是存储空间检测结果");
+        return {};
+    }
+    const auto plain = decrypt(encrypted);
+    if (plain.isEmpty()) {
+        error_ = QStringLiteral("本地加密文件认证失败或格式损坏；未重置密钥或覆盖数据");
+        return {};
+    }
+    QJsonParseError parseError;
+    const auto document = QJsonDocument::fromJson(plain, &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isArray()) {
+        error_ = QStringLiteral("本地加密文件中的记录格式无效；原文件已保留");
+        return {};
+    }
+    return document.array().toVariantList();
 }
 
 bool LocalVault::hasConversation(const QString& conversationId) const
@@ -327,11 +359,74 @@ bool LocalVault::hasConversation(const QString& conversationId) const
 
 bool LocalVault::saveConversation(const QString& conversationId, const QVariantList& messages)
 {
+    if (!isReady()) return false;
+    error_.clear();
     const auto plain = QJsonDocument(QJsonArray::fromVariantList(messages)).toJson(QJsonDocument::Compact);
     const auto encrypted = encrypt(plain);
-    if (encrypted.isEmpty()) return false;
-    QSaveFile output(conversationPath(conversationId));
-    return output.open(QIODevice::WriteOnly)
-        && output.write(encrypted) == encrypted.size()
-        && output.commit();
+    if (encrypted.isEmpty()) {
+        error_ = QStringLiteral("本地加密失败；尚未写入文件");
+        return false;
+    }
+    const auto path = conversationPath(conversationId);
+    QLockFile lock(path + QStringLiteral(".lock"));
+    if (!lock.tryLock(1000)) {
+        error_ = QStringLiteral("本地加密文件正由另一个操作写入，请稍后重试"); return false;
+    }
+    // Keep the last readable generation encrypted. Never replace a corrupt
+    // primary (or its good backup) with an empty in-memory record list.
+    if (QFile::exists(path)) {
+        readConversationFile(path);
+        if (!error_.isEmpty()) return false;
+        QFile current(path);
+        if (!current.open(QIODevice::ReadOnly)) {
+            error_ = QStringLiteral("读取备份源文件失败：%1").arg(current.errorString()); return false;
+        }
+        const auto previous = current.readAll();
+        if (current.error() != QFileDevice::NoError) {
+            error_ = QStringLiteral("读取备份源文件失败：%1").arg(current.errorString()); return false;
+        }
+        QSaveFile backup(path + QStringLiteral(".bak"));
+        if (!backup.open(QIODevice::WriteOnly) || backup.write(previous) != previous.size() || !backup.commit()) {
+            error_ = QStringLiteral("无法保存加密备份，原文件未覆盖：%1").arg(backup.errorString()); return false;
+        }
+    }
+    QSaveFile output(path);
+    if (!output.open(QIODevice::WriteOnly) || output.write(encrypted) != encrypted.size() || !output.commit()) {
+        error_ = QStringLiteral("无法原子保存本地加密文件：%1").arg(output.errorString()); return false;
+    }
+    return true;
+}
+
+bool LocalVault::recoverEmptyConversation(const QString& conversationId, const QVariantList& fallback)
+{
+    if (!isReady()) return false;
+    const auto path = conversationPath(conversationId);
+    QLockFile lock(path + QStringLiteral(".lock"));
+    if (!lock.tryLock(1000)) {
+        error_ = QStringLiteral("本地配置正由另一个操作写入，暂未恢复"); return false;
+    }
+    QFile source(path);
+    if (!source.exists() || !source.open(QIODevice::ReadOnly) || source.size() != 0) return false;
+    source.close();
+    error_.clear();
+    auto rows = fallback;
+    if (QFile::exists(path + QStringLiteral(".bak"))) {
+        const auto saved = readConversationFile(path + QStringLiteral(".bak"));
+        // Even a bad backup must be retained for investigation, not silently
+        // bypassed by creating defaults.
+        if (!error_.isEmpty()) return false;
+        rows = saved;
+    }
+    const auto encrypted = encrypt(QJsonDocument(QJsonArray::fromVariantList(rows)).toJson(QJsonDocument::Compact));
+    if (encrypted.isEmpty()) { error_ = QStringLiteral("恢复配置时加密失败"); return false; }
+    const auto archive = path + QStringLiteral(".empty-") + QUuid::createUuid().toString(QUuid::WithoutBraces);
+    if (!QFile::copy(path, archive)) {
+        error_ = QStringLiteral("无法保留空文件备份；未进行恢复"); return false;
+    }
+    QSaveFile output(path);
+    if (!output.open(QIODevice::WriteOnly) || output.write(encrypted) != encrypted.size() || !output.commit()) {
+        error_ = QStringLiteral("恢复配置写入失败：%1").arg(output.errorString()); return false;
+    }
+    error_.clear();
+    return true;
 }

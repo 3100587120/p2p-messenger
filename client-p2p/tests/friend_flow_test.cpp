@@ -3,7 +3,66 @@
 #include <QTemporaryDir>
 #include <QDir>
 #include <QTimer>
+#include <QFile>
+#include <QFileInfo>
+#include <QCryptographicHash>
 #include <iostream>
+
+static QString vaultFile(const QString& root, const QString& slot)
+{
+    return QDir(root).filePath("vault/" + QString::fromLatin1(
+        QCryptographicHash::hash(slot.toUtf8(), QCryptographicHash::Sha256).toHex()) + ".p2pvault");
+}
+
+static QByteArray readBytes(const QString& path)
+{
+    QFile file(path);
+    return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray {};
+}
+
+static int emptyProfileRegression(const QString& root, const QString& sourceRoot)
+{
+    // A user's fixture is copied before opening any production controller.
+    // Only the isolated temporary destination may be modified by this test.
+    if (!sourceRoot.isEmpty()) {
+        if (!QDir().mkpath(QDir(root).filePath("vault"))) return 6;
+        const QDir source(QDir(sourceRoot).filePath("vault"));
+        for (const auto& name : source.entryList(QDir::Files))
+            if (!QFile::copy(source.filePath(name), QDir(root).filePath("vault/" + name))) return 6;
+    }
+    LocalVault vault;
+    RelayCrypto identity;
+    if (!identity.loadOrCreate(vault)) return 6;
+    const auto invite = identity.inviteCode();
+    const auto identityPath = vaultFile(root, "__relay_identity");
+    const auto keyPath = QDir(root).filePath("vault/master-key.protected");
+    const auto identityBefore = readBytes(identityPath), keyBefore = readBytes(keyPath);
+    const auto profilePath = vaultFile(root, "__profile");
+    if (sourceRoot.isEmpty()) {
+        QFile empty(profilePath);
+        if (!empty.open(QIODevice::WriteOnly) || !empty.resize(0)) return 6;
+    }
+    const auto welcomeBefore = readBytes(vaultFile(root, "welcome"));
+    {
+        MessengerController controller;
+        if (!controller.lastError().contains(QStringLiteral("0 字节")) ||
+            !controller.setProfileName("Recovered name") || !controller.setAssistedConnection(true) ||
+            controller.inviteCode() != invite || !controller.setAssistedConnection(false)) {
+            std::cerr << "EMPTY_PROFILE_RECOVERY=FAIL " << controller.lastError().toStdString() << std::endl;
+            return 6;
+        }
+    }
+    {
+        MessengerController reopened;
+        if (reopened.profileName() != "Recovered name" || !reopened.setAssistedConnection(true) ||
+            reopened.inviteCode() != invite) return 6;
+    }
+    if (identityBefore != readBytes(identityPath) || keyBefore != readBytes(keyPath) ||
+        (!welcomeBefore.isEmpty() && welcomeBefore != readBytes(vaultFile(root, "welcome"))) ||
+        QDir(QDir(root).filePath("vault")).entryList({QFileInfo(profilePath).fileName() + ".empty-*"}, QDir::Files).isEmpty()) return 6;
+    std::cout << "EMPTY_PROFILE_RECOVERY_IDENTITY_AND_HISTORY_PRESERVED=PASS" << std::endl;
+    return 0;
+}
 
 static int identityRegression()
 {
@@ -58,6 +117,10 @@ int main(int argc, char** argv)
     QTemporaryDir root(QDir::tempPath() + "/friend-flow-XXXXXX");
     if (!root.isValid()) return 2;
     qputenv("P2P_MESSENGER_DATA_ROOT", root.path().toUtf8());
+    if (app.arguments().contains("--empty-profile-regression")) {
+        const auto index = app.arguments().indexOf("--fixture-root");
+        return emptyProfileRegression(root.path(), index >= 0 ? app.arguments().value(index + 1) : QString {});
+    }
     if (app.arguments().contains("--identity-regression")) return identityRegression();
     MessengerController controller;
     bool invitationPrinted = false, accepted = false, receivedText = false, sentText = false;

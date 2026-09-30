@@ -22,6 +22,11 @@ RelayClient::RelayClient(LocalVault& vault, QObject* parent)
     : QObject(parent), vault_(vault)
 {
     crypto_.loadOrCreate(vault_);
+    // Old builds left zero-length metadata files. Recover only those queues;
+    // the identity and nonempty unreadable ciphertext must never be reset.
+    for (const auto* slot : {outboxSlot, seenSlot})
+        if (vault_.hasConversation(QString::fromLatin1(slot)))
+            vault_.recoverEmptyConversation(QString::fromLatin1(slot), {});
     for (const auto& item : vault_.loadConversation(QString::fromLatin1(outboxSlot))) {
         const auto row = item.toMap();
         const auto id = row.value(QStringLiteral("id")).toString();
@@ -52,7 +57,7 @@ RelayClient::RelayClient(LocalVault& vault, QObject* parent)
         if (!enabled_) return;
         if (!failureReported_) {
             failureReported_ = true;
-            emit errorOccurred(tr("连接响应超时，正在重新连接。未送达的好友申请保存在本机，恢复后会自动重发。"));
+            emit errorOccurred(tr("无法及时连接中继 %1。可能是网络、DNS 或服务不可达；并非好友拒绝。请使用当前网络可直接访问的中继地址。已保存的好友申请会在恢复连接后重发。").arg(endpoint_.host()));
         }
         refreshConnection();
     };

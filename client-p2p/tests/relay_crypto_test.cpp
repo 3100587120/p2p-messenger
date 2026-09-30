@@ -5,6 +5,8 @@
 #include <QDir>
 #include <QJsonObject>
 #include <QTemporaryDir>
+#include <QFile>
+#include <QCryptographicHash>
 
 #include <iostream>
 
@@ -48,6 +50,35 @@ int main(int argc, char** argv)
                          .first().toMap().value(QStringLiteral("private")).toString().size() << '\n';
         return 11;
     }
+    const auto aliceRoot = QDir(root.path()).filePath(QStringLiteral("alice"));
+    const auto profilePath = QDir(aliceRoot).filePath("vault/" + QString::fromLatin1(
+        QCryptographicHash::hash("__profile", QCryptographicHash::Sha256).toHex()) + ".p2pvault");
+    const QVariantList first {QVariantMap {{"profileName", "first"}}};
+    const QVariantList second {QVariantMap {{"profileName", "second"}}};
+    if (!aliceVault.saveConversation("__profile", first) || !aliceVault.saveConversation("__profile", second)) return 12;
+    {
+        QFile empty(profilePath);
+        if (!empty.open(QIODevice::WriteOnly) || !empty.resize(0)) return 12;
+    }
+    if (!aliceVault.recoverEmptyConversation("__profile", second) || aliceVault.loadConversation("__profile") != first) return 12;
+    {
+        QFile corrupt(profilePath);
+        if (!corrupt.open(QIODevice::WriteOnly) || corrupt.write("nonempty-corrupt") != 16) return 12;
+    }
+    if (aliceVault.recoverEmptyConversation("__profile", first) ||
+        aliceVault.saveConversation("__profile", second) || !aliceVault.error().contains(QStringLiteral("认证失败"))) return 12;
+    QFile intactBackup(profilePath + ".bak");
+    if (!intactBackup.open(QIODevice::ReadOnly) || intactBackup.readAll().isEmpty()) return 12;
+    // A blocked backup destination must fail before replacing the primary.
+    if (!aliceVault.saveConversation("__write_failure", first)) return 13;
+    const auto failurePath = QDir(aliceRoot).filePath("vault/" + QString::fromLatin1(
+        QCryptographicHash::hash("__write_failure", QCryptographicHash::Sha256).toHex()) + ".p2pvault");
+    if (!QDir().mkpath(failurePath + ".bak") ||
+        aliceVault.saveConversation("__write_failure", second) ||
+        !aliceVault.error().contains(QStringLiteral("备份")) ||
+        aliceVault.loadConversation("__write_failure") != first) return 13;
+    std::cout << "failed-write preserves original record passed\n";
+    std::cout << "encrypted backup recovery and nonempty corruption protection passed\n";
     std::cout << "relay crypto round-trip, tamper rejection, identity persistence passed\n";
     return 0;
 }

@@ -1,0 +1,5 @@
+# Set RELAY_DOMAIN to an operator-owned domain pointing directly at the host.
+# A reverse proxy does not make an unreachable host reachable from China.
+{$RELAY_DOMAIN} {
+    reverse_proxy 127.0.0.1:8787
+}

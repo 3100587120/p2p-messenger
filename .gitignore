@@ -18,6 +18,7 @@ manual-download
 
 # Local relay toolchain and build outputs
 /relay/node_modules/
+/relay/standalone/node_modules/
 /relay/.wrangler/
 /work/
 /dist/

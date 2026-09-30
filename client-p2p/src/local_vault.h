@@ -15,14 +15,18 @@ public:
     QVariantList loadConversation(const QString& conversationId) const;
     bool hasConversation(const QString& conversationId) const;
     bool saveConversation(const QString& conversationId, const QVariantList& messages);
+    // Only an exactly empty file can be rebuilt. Nonempty unreadable ciphertext
+    // is never discarded. A readable encrypted backup takes priority.
+    bool recoverEmptyConversation(const QString& conversationId, const QVariantList& fallback);
 
 private:
     QString rootPath_;
     QByteArray masterKey_;
-    QString error_;
+    mutable QString error_;
 
     bool initialise();
     QByteArray encrypt(const QByteArray& plain) const;
     QByteArray decrypt(const QByteArray& encrypted) const;
     QString conversationPath(const QString& conversationId) const;
+    QVariantList readConversationFile(const QString& path) const;
 };

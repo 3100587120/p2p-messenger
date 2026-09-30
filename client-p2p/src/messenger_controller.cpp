@@ -591,8 +591,15 @@ MessengerController::MessengerController(QObject* parent)
         if (!inviteCode_.isEmpty() && listeningPort_ > 0) identityRefresh_->stop();
     });
     if (!accountId_.isEmpty()) identityRefresh_->start();
-    const auto savedProfile = vault_.loadConversation(QStringLiteral("__profile"));
+    auto savedProfile = vault_.loadConversation(QStringLiteral("__profile"));
+    bool recoveredEmptyProfile = false;
+    if (savedProfile.isEmpty() && vault_.hasConversation(QStringLiteral("__profile"))) {
+        recoveredEmptyProfile = vault_.recoverEmptyConversation(QStringLiteral("__profile"),
+            {QVariantMap {{QStringLiteral("accountId"), accountId_}}});
+        if (recoveredEmptyProfile) savedProfile = vault_.loadConversation(QStringLiteral("__profile"));
+    }
     profileReadable_ = !savedProfile.isEmpty() || !vault_.hasConversation(QStringLiteral("__profile"));
+    const auto profileLoadError = vault_.error();
     if (!savedProfile.isEmpty()) {
         const auto profile = savedProfile.first().toMap();
         // The encrypted vault (and relay key), not the optional direct engine,
@@ -655,8 +662,10 @@ MessengerController::MessengerController(QObject* parent)
     if (!vault_.isReady() || !profileReadable_ || !relay_.isReady()) {
         networkStatus_ = tr("本机加密账号未就绪 — 原有数据已保留");
         setError(!vault_.isReady() ? vault_.error() : !profileReadable_
-            ? tr("本地账号资料无法解密，已保留原文件，未重置账号或聊天记录。")
+            ? tr("本地账号资料无法解密，已保留原文件，未重置账号或聊天记录。%1").arg(profileLoadError)
             : tr("端到端加密身份无法读取或生成，已保留原有数据。"));
+    } else if (recoveredEmptyProfile) {
+        setError(tr("原账号配置文件为 0 字节，已保留空文件备份并恢复可用配置。现有密钥和聊天记录未删除；若没有有效配置备份，账号名称和好友列表需要重新设置。"));
     }
     if (assistedConnection_ && !relay_.hasEndpoint()) {
         networkStatus_ = tr("辅助中继尚未部署，不能发送异网申请");
@@ -771,7 +780,8 @@ bool MessengerController::setProfileName(const QString& name)
     profileName_ = trimmed;
     if (!saveProfile()) {
         profileName_ = previous;
-        setError(tr("账号名称无法保存到本机，请检查加密存储和剩余空间"));
+        setError(tr("账号名称无法保存到本机：%1").arg(profileReadable_ ? vault_.error()
+            : tr("原账号配置无法读取，已阻止覆盖")));
         return false;
     }
     if (!accountId_.isEmpty()) daemon_.setIdentityAlias(accountId_, trimmed);
@@ -1533,7 +1543,8 @@ bool MessengerController::setAssistedConnection(bool enabled)
     assistedConnection_ = enabled;
     if (!saveProfile()) {
         assistedConnection_ = !enabled;
-        setError(tr("连接模式无法保存到本机，请检查加密存储和剩余空间"));
+        setError(tr("连接模式无法保存到本机：%1").arg(profileReadable_ ? vault_.error()
+            : tr("原账号配置无法读取，已阻止覆盖；请先恢复配置")));
         return false;
     }
     selfTestPassed_ = false;
@@ -1574,7 +1585,8 @@ bool MessengerController::setRelayEndpoint(const QString& endpoint)
     relayEndpoint_ = input.isEmpty() ? QString {} : url.toString(QUrl::FullyEncoded);
     if (!saveProfile()) {
         relayEndpoint_ = previous;
-        setError(tr("中继地址无法保存到本机，请检查存储空间。"));
+        setError(tr("中继地址无法保存到本机：%1").arg(profileReadable_ ? vault_.error()
+            : tr("原账号配置无法读取，已阻止覆盖")));
         return false;
     }
     relay_.setEndpoint(QUrl(relayEndpoint_));
