@@ -28,6 +28,21 @@ void traceStartup(const char* stage)
 int main(int argc, char* argv[])
 {
     traceStartup("entry");
+#if defined(Q_OS_ANDROID) && !defined(QT_NO_DEBUG)
+    // Optional CI-only path in this exact APK: isolate Keystore/TLS/controller
+    // from the emulator's unsupported Qt GUI SIMD instruction translation.
+    // Normal launches and UI acceptance do not take this path.
+    if (androidAcceptanceHeadless()) {
+        QCoreApplication application(argc, argv);
+        QCoreApplication::setApplicationName(QStringLiteral("P2P Messenger"));
+        QCoreApplication::setOrganizationName(QStringLiteral("P2P Messenger"));
+        QString peer;
+        if (!prepareAndroidAcceptance(application, &peer) || peer.isEmpty()) return 2;
+        MessengerController messenger;
+        startAndroidAcceptance(application, messenger, peer);
+        return application.exec();
+    }
+#endif
     QQuickStyle::setStyle(QStringLiteral("Material"));
     QGuiApplication application(argc, argv);
     traceStartup("qt-ready");

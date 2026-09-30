@@ -180,7 +180,7 @@ endif()
 
 if(P2P_MESSENGER_BUILD_RELAY_TESTS AND WIN32)
     if(P2P_MESSENGER_WITH_DAEMON)
-        add_executable(P2PMessengerFriendFlowTest
+        set(_friend_flow_sources
             tests/friend_flow_test.cpp
             src/messenger_controller.cpp src/messenger_controller.h
             src/daemon_bridge.cpp src/daemon_bridge.h
@@ -189,13 +189,18 @@ if(P2P_MESSENGER_BUILD_RELAY_TESTS AND WIN32)
             src/relay_client.cpp src/relay_client.h
             src/relay_crypto.cpp src/relay_crypto.h
             src/local_vault.cpp src/local_vault.h)
-        foreach(_property IN ITEMS INCLUDE_DIRECTORIES COMPILE_DEFINITIONS LINK_DIRECTORIES LINK_LIBRARIES LINK_OPTIONS)
-            get_target_property(_value P2PMessenger ${_property})
-            if(_value)
-                set_property(TARGET P2PMessengerFriendFlowTest PROPERTY ${_property} "${_value}")
-            endif()
+        foreach(_test IN ITEMS P2PMessengerFriendFlowTest P2PMessengerFriendFlowWithoutDaemonTest)
+            add_executable(${_test} ${_friend_flow_sources})
+            foreach(_property IN ITEMS INCLUDE_DIRECTORIES COMPILE_DEFINITIONS LINK_DIRECTORIES LINK_LIBRARIES LINK_OPTIONS)
+                get_target_property(_value P2PMessenger ${_property})
+                if(_value)
+                    set_property(TARGET ${_test} PROPERTY ${_property} "${_value}")
+                endif()
+            endforeach()
+            target_include_directories(${_test} PRIVATE src)
         endforeach()
-        target_include_directories(P2PMessengerFriendFlowTest PRIVATE src)
+        # Exercise production controller/crypto with the optional engine absent.
+        set_property(TARGET P2PMessengerFriendFlowWithoutDaemonTest PROPERTY COMPILE_DEFINITIONS "")
     endif()
     add_executable(P2PMessengerRelayCryptoTest
         tests/relay_crypto_test.cpp

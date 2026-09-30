@@ -1,4 +1,4 @@
-param([switch]$SkipDeploy, [switch]$BuildE2E, [switch]$BuildRelayTests,
+param([switch]$SkipDeploy, [switch]$BuildE2E, [switch]$BuildRelayTests, [switch]$IndependentTestsOnly,
       [string]$RelayUrl = '')
 
 $ErrorActionPreference = 'Stop'
@@ -66,12 +66,17 @@ $configureArgs = @(
 )
 if ($BuildE2E) { $configureArgs += '-DP2P_MESSENGER_BUILD_DAEMON_E2E=ON' }
 Invoke-CMake $configureArgs
-Invoke-CMake @('--build', $buildRoot, '--config', 'Release', '--target', 'P2PMessenger', '--parallel', '1', '--', '/nr:false')
+if (-not $IndependentTestsOnly) {
+    Invoke-CMake @('--build', $buildRoot, '--config', 'Release', '--target', 'P2PMessenger', '--parallel', '1', '--', '/nr:false')
+}
 if ($BuildE2E) {
     Invoke-CMake @('--build', $buildRoot, '--config', 'Release', '--target', 'P2PMessengerDaemonE2E', '--parallel', '1', '--', '/nr:false')
 }
 if ($BuildRelayTests) {
-    Invoke-CMake @('--build', $buildRoot, '--config', 'Release', '--target', 'P2PMessengerFriendFlowTest', '--parallel', '1', '--', '/nr:false')
+    if (-not $IndependentTestsOnly) {
+        Invoke-CMake @('--build', $buildRoot, '--config', 'Release', '--target', 'P2PMessengerFriendFlowTest', '--parallel', '1', '--', '/nr:false')
+    }
+    Invoke-CMake @('--build', $buildRoot, '--config', 'Release', '--target', 'P2PMessengerFriendFlowWithoutDaemonTest', '--parallel', '1', '--', '/nr:false')
     Invoke-CMake @('--build', $buildRoot, '--config', 'Release', '--target', 'P2PMessengerRelayCryptoTest', '--parallel', '1', '--', '/nr:false')
     Invoke-CMake @('--build', $buildRoot, '--config', 'Release', '--target', 'P2PMessengerRelayClientTest', '--parallel', '1', '--', '/nr:false')
 }

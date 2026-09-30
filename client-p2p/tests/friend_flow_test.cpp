@@ -5,6 +5,43 @@
 #include <QTimer>
 #include <iostream>
 
+static int identityRegression()
+{
+    LocalVault vault;
+    RelayCrypto identity;
+    if (!identity.loadOrCreate(vault)) return 6;
+    const auto code = identity.inviteCode();
+    const QVariantList contacts {
+        QVariantMap {{"id", "relay-history"}, {"transport", "relay"}, {"name", "Saved friend"}, {"ready", true}},
+        QVariantMap {{"id", "direct-history"}, {"name", "Old direct friend"}, {"ready", true}, {"conversationId", "old-session"}}
+    };
+    if (!vault.saveConversation("__profile", {QVariantMap {
+        {"accountId", "previous-direct-engine"}, {"profileName", "Saved name"}, {"contacts", contacts},
+        {"network", QVariantMap {{"assistedConnection", false}, {"relayEndpoint", "ws://localhost:1"}}}}})) return 6;
+    const QVariantList history {QVariantMap {{"body", "preserved local record"}}};
+    if (!vault.saveConversation("direct-history", history)) return 6;
+    {
+        MessengerController controller;
+        if (!controller.accountId().isEmpty() || controller.profileName() != "Saved name" ||
+            controller.contacts().size() != 2 || !controller.contacts().first().toMap().value("ready").toBool() ||
+            controller.contacts().last().toMap().value("ready").toBool() ||
+            !controller.setAssistedConnection(true) || controller.inviteCode() != code ||
+            !controller.setProfileName("New name") ||
+            controller.addContact("Peer", code) ||
+            !controller.lastError().contains(QStringLiteral("自检尚未通过")) ||
+            !controller.setAssistedConnection(false)) {
+            std::cerr << "ENGINE_INDEPENDENCE=FAIL " << controller.lastError().toStdString() << std::endl;
+            return 6;
+        }
+    }
+    MessengerController reopened;
+    if (reopened.profileName() != "New name" || reopened.contacts().size() != 2 ||
+        vault.loadConversation("direct-history") != history ||
+        !reopened.setAssistedConnection(true) || reopened.inviteCode() != code) return 6;
+    std::cout << "ENGINE_INDEPENDENCE_AND_PROFILE_PERSISTENCE=PASS" << std::endl;
+    return 0;
+}
+
 int main(int argc, char** argv)
 {
     qputenv("QT_QPA_PLATFORM", "offscreen");
@@ -12,6 +49,7 @@ int main(int argc, char** argv)
     QTemporaryDir root(QDir::tempPath() + "/friend-flow-XXXXXX");
     if (!root.isValid()) return 2;
     qputenv("P2P_MESSENGER_DATA_ROOT", root.path().toUtf8());
+    if (app.arguments().contains("--identity-regression")) return identityRegression();
     MessengerController controller;
     bool invitationPrinted = false, accepted = false, receivedText = false, sentText = false;
     QObject::connect(&controller, &MessengerController::lastErrorChanged, &app, [&] {

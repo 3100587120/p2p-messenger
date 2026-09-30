@@ -4,7 +4,7 @@
 #if defined(Q_OS_ANDROID) && !defined(QT_NO_DEBUG)
 #include "messenger_controller.h"
 #include "local_vault.h"
-#include <QGuiApplication>
+#include <QCoreApplication>
 #include <QJniObject>
 #include <QStandardPaths>
 #include <QSslSocket>
@@ -15,7 +15,15 @@
 #include <memory>
 #include <QtCore/qnativeinterface.h>
 
-bool prepareAndroidAcceptance(QGuiApplication&, QString* peer)
+bool androidAcceptanceHeadless()
+{
+    const QJniObject activity(QNativeInterface::QAndroidApplication::context().object<jobject>());
+    const auto intent = activity.callObjectMethod("getIntent", "()Landroid/content/Intent;");
+    return intent.callMethod<jboolean>("getBooleanExtra", "(Ljava/lang/String;Z)Z",
+        QJniObject::fromString("p2p_test_headless").object<jstring>(), false);
+}
+
+bool prepareAndroidAcceptance(QCoreApplication&, QString* peer)
 {
     const QJniObject activity(QNativeInterface::QAndroidApplication::context().object<jobject>());
     const auto intent = activity.callObjectMethod("getIntent", "()Landroid/content/Intent;");
@@ -38,13 +46,13 @@ bool prepareAndroidAcceptance(QGuiApplication&, QString* peer)
     return passed && QSslSocket::supportsSsl();
 }
 
-void startAndroidAcceptance(QGuiApplication& app, MessengerController& controller, const QString& peer)
+void startAndroidAcceptance(QCoreApplication& app, MessengerController& controller, const QString& peer)
 {
     if (peer.isEmpty()) return;
-    struct State { bool queued = false; bool accepted = false; bool sent = false; bool received = false; bool done = false; };
+    struct State { bool queued = false; bool accepted = false; bool sent = false; bool delivered = false; bool received = false; bool done = false; };
     const auto state = std::make_shared<State>();
     const auto finish = [&app, state] {
-        if (state->accepted && state->sent && state->received && !state->done) {
+        if (state->accepted && state->sent && state->delivered && state->received && !state->done) {
             state->done = true;
             qInfo().noquote() << "P2P_ANDROID_FRIEND_FLOW=PASS";
             QTimer::singleShot(2500, &app, &QCoreApplication::quit);
@@ -70,6 +78,8 @@ void startAndroidAcceptance(QGuiApplication& app, MessengerController& controlle
         for (const auto& row : controller.messages()) {
             const auto message = row.toMap();
             if (message.value("body") == "controller-to-cloud" && !message.value("outgoing").toBool()) state->received = true;
+            if (message.value("body") == "cloud-to-controller" && message.value("outgoing").toBool() &&
+                message.value("delivery").toString() == QStringLiteral("已送达")) state->delivered = true;
         }
         finish();
     });
@@ -85,7 +95,8 @@ void startAndroidAcceptance(QGuiApplication& app, MessengerController& controlle
     QTimer::singleShot(120000, &app, [&app, state] {
         if (!state->done) {
             qWarning().noquote() << "P2P_ANDROID_FRIEND_FLOW=FAIL queued=" << state->queued
-                                << "accepted=" << state->accepted << "sent=" << state->sent << "received=" << state->received;
+                                << "accepted=" << state->accepted << "sent=" << state->sent
+                                << "delivered=" << state->delivered << "received=" << state->received;
             app.exit(4);
         }
     });

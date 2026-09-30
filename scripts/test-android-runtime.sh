@@ -9,7 +9,7 @@ fi
 adb install -r "${apk_files[0]}"
 adb logcat -c
 adb shell am start -W -n io.p2pmessenger.app/org.qtproject.qt.android.bindings.QtActivity \
-  --es p2p_test_peer "${RECEIVER_INVITE_CODE:?}"
+  --es p2p_test_peer "${RECEIVER_INVITE_CODE:?}" --ez p2p_test_headless "${HEADLESS:-false}"
 for attempt in $(seq 1 90); do
   adb logcat -d > runtime-evidence/logcat.txt
   if grep -q 'P2P_ANDROID_FRIEND_FLOW=PASS' runtime-evidence/logcat.txt; then

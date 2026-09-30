@@ -101,22 +101,34 @@ QByteArray unprotectForCurrentUser(const QByteArray& protectedKey)
 #endif
 
 #ifdef Q_OS_ANDROID
-QByteArray loadAndroidKey()
+bool takeAndroidException(QJniEnvironment& environment, QString* failure)
+{
+    const auto exception = environment->ExceptionOccurred();
+    if (!exception) return false;
+    environment->ExceptionClear();
+    const QJniObject throwable(exception);
+    environment->DeleteLocalRef(exception);
+    *failure = throwable.callObjectMethod("toString", "()Ljava/lang/String;").toString();
+    environment.checkAndClearExceptions();
+    return true;
+}
+
+QByteArray loadAndroidKey(QString* failure)
 {
     auto context = QNativeInterface::QAndroidApplication::context();
     QJniEnvironment environment;
     auto clazz = environment.findClass("org/p2pmessenger/VaultKeyStore");
-    if (environment.checkAndClearExceptions() || !clazz) return {};
+    if (takeAndroidException(environment, failure) || !clazz) return {};
     auto method = environment->GetStaticMethodID(clazz, "loadOrCreate", "(Landroid/content/Context;Ljava/lang/String;)[B");
-    if (environment.checkAndClearExceptions() || !method) return {};
+    if (takeAndroidException(environment, failure) || !method) return {};
     auto name = QJniObject::fromString(QStringLiteral("master-key"));
     auto array = static_cast<jbyteArray>(environment->CallStaticObjectMethod(clazz, method, context.object<jobject>(), name.object<jstring>()));
-    if (environment.checkAndClearExceptions() || !array) return {};
+    if (takeAndroidException(environment, failure) || !array) return {};
     const auto size = environment->GetArrayLength(array);
     QByteArray key(size, Qt::Uninitialized);
     environment->GetByteArrayRegion(array, 0, size, reinterpret_cast<jbyte*>(key.data()));
     environment->DeleteLocalRef(array);
-    return environment.checkAndClearExceptions() ? QByteArray {} : key;
+    return takeAndroidException(environment, failure) ? QByteArray {} : key;
 }
 
 QByteArray androidCrypt(const char* method, const QByteArray& key, const QByteArray& nonce,
@@ -173,14 +185,14 @@ bool LocalVault::initialise()
 #if defined(Q_OS_WIN)
         masterKey_ = unprotectForCurrentUser(keyFile.readAll());
 #elif defined(Q_OS_ANDROID)
-        masterKey_ = loadAndroidKey();
+        masterKey_ = loadAndroidKey(&error_);
 #elif defined(Q_OS_IOS)
         masterKey_ = p2pAppleLoadOrCreateVaultKey(QStringLiteral("master-key"));
 #else
         error_ = QStringLiteral("此平台的安全密钥存储尚未接入"); return false;
 #endif
         if (masterKey_.size() != keySize) {
-            error_ = QStringLiteral("本地密钥无法由当前设备解锁");
+            error_ = QStringLiteral("本地密钥无法由当前设备解锁；原有数据已保留。%1").arg(error_);
             masterKey_.clear();
             return false;
         }
@@ -211,9 +223,9 @@ bool LocalVault::initialise()
     masterKey_ = key;
     return true;
 #elif defined(Q_OS_ANDROID)
-    masterKey_ = loadAndroidKey();
+    masterKey_ = loadAndroidKey(&error_);
     if (masterKey_.size() == keySize) return true;
-    error_ = QStringLiteral("Android Keystore 未能保护本地密钥");
+    error_ = QStringLiteral("Android Keystore 无法创建或解锁本地密钥；未重置数据。%1").arg(error_);
     return false;
 #elif defined(Q_OS_IOS)
     masterKey_ = p2pAppleLoadOrCreateVaultKey(QStringLiteral("master-key"));

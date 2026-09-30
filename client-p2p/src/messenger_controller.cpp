@@ -108,9 +108,11 @@ MessengerController::MessengerController(QObject* parent)
     , networkStatus_(tr("仅本地模式 — 尚未配置自建服务"))
     , relay_(vault_, this)
 {
-    connect(qGuiApp, &QGuiApplication::applicationStateChanged, this, [this](Qt::ApplicationState state) {
-        if (state == Qt::ApplicationActive && assistedConnection_) relay_.refreshConnection();
-    });
+    if (auto* gui = qobject_cast<QGuiApplication*>(QCoreApplication::instance())) {
+        connect(gui, &QGuiApplication::applicationStateChanged, this, [this](Qt::ApplicationState state) {
+            if (state == Qt::ApplicationActive && assistedConnection_) relay_.refreshConnection();
+        });
+    }
     connect(&relay_, &RelayClient::connectedChanged, this, [this](bool connected) {
         if (!assistedConnection_) return;
         if (connected) {
@@ -310,7 +312,8 @@ MessengerController::MessengerController(QObject* parent)
     });
     connect(&relay_, &RelayClient::deliveryState, this,
             [this](const QString& packetId, const QString& state) {
-        if (packetId == selfTestPacketId_ && state == QStringLiteral("delivered")) {
+        if (assistedConnection_ && relay_.isConnected() &&
+            packetId == selfTestPacketId_ && state == QStringLiteral("delivered")) {
             selfTestPassed_ = true;
             selfTestPacketId_.clear();
             networkStatus_ = tr("辅助连接自检通过 — 等待对方上线");
@@ -590,7 +593,9 @@ MessengerController::MessengerController(QObject* parent)
     const auto savedProfile = vault_.loadConversation(QStringLiteral("__profile"));
     if (!savedProfile.isEmpty()) {
         const auto profile = savedProfile.first().toMap();
-        if (profile.value(QStringLiteral("accountId")).toString() == accountId_) {
+        // The encrypted vault (and relay key), not the optional direct engine,
+        // owns this profile. An unavailable/recreated engine must not discard it.
+        {
             profileName_ = profile.value(QStringLiteral("profileName")).toString();
             directEndpoint_ = numericEndpointList(profile.value(QStringLiteral("directEndpoint")).toString());
             contacts_ = profile.value(QStringLiteral("contacts")).toList();
@@ -613,6 +618,17 @@ MessengerController::MessengerController(QObject* parent)
             networkConfig_.turnHost.clear();
             networkConfig_.turnUser.clear();
             networkConfig_.turnPassword.clear();
+            if (profile.value(QStringLiteral("accountId")).toString() != accountId_) {
+                for (auto& item : contacts_) {
+                    auto entry = item.toMap();
+                    if (entry.value(QStringLiteral("transport")).toString() == QStringLiteral("relay") ||
+                        entry.value(QStringLiteral("id")).toString() == QStringLiteral("welcome")) continue;
+                    entry.insert(QStringLiteral("ready"), false);
+                    entry.insert(QStringLiteral("status"), tr("直连身份已变化，请重新配对；聊天记录已保留"));
+                    entry.remove(QStringLiteral("conversationId"));
+                    item = entry;
+                }
+            }
         }
     }
     if (!accountId_.isEmpty() && networkConfig_.isValid()) {
@@ -743,12 +759,14 @@ bool MessengerController::setProfileName(const QString& name)
         setError(tr("账号名称须为 1 至 64 个字符"));
         return false;
     }
-    if (!daemon_.setIdentityAlias(accountId_, trimmed)) {
-        setError(tr("无法保存本机账号名称，请检查通信内核"));
+    const auto previous = profileName_;
+    profileName_ = trimmed;
+    if (!saveProfile()) {
+        profileName_ = previous;
+        setError(tr("账号名称无法保存到本机，请检查加密存储和剩余空间"));
         return false;
     }
-    profileName_ = trimmed;
-    saveProfile();
+    if (!accountId_.isEmpty()) daemon_.setIdentityAlias(accountId_, trimmed);
     setError({});
     emit profileNameChanged();
     emit pairingCodeChanged();
@@ -896,10 +914,6 @@ bool MessengerController::addContact(const QString& name, const QString& invite)
         setError(tr("还没有填写配对码。请让对方点击“分享我的配对码”后发给你。"));
         return false;
     }
-    if (accountId_.isEmpty() || inviteCode_.isEmpty()) {
-        setError(tr("本机身份仍在生成，稍后再添加好友"));
-        return false;
-    }
     auto peerCode = invite.trimmed();
     if (assistedConnection_) {
         if (!selfTestPassed_) {
@@ -949,6 +963,10 @@ bool MessengerController::addContact(const QString& name, const QString& invite)
         emit contactsChanged();
         selectContact(id);
         return true;
+    }
+    if (accountId_.isEmpty() || inviteCode_.isEmpty()) {
+        setError(tr("直连身份仍在生成，稍后重试，或切换到辅助连接"));
+        return false;
     }
     QString peerEndpoint;
     QString peerName;
@@ -1477,23 +1495,29 @@ bool MessengerController::setAssistedConnection(bool enabled)
 {
     if (assistedConnection_ == enabled) return true;
     if (enabled && !relay_.isReady()) {
-        setError(tr("辅助连接身份未能创建，请检查本机加密存储。"));
+        setError(tr("辅助连接身份未能创建：%1").arg(vault_.isReady()
+            ? tr("端到端加密密钥生成或保存失败") : vault_.error()));
         return false;
     }
     if (enabled && !relay_.hasEndpoint()) {
         setError(tr("辅助中继尚未部署，暂时不能切换到辅助连接。"));
         return false;
     }
-    if (accountId_.isEmpty() || !daemon_.configurePrivateNetwork(accountId_, networkConfig_, false)) {
-        setError(tr("连接模式切换失败：本机通信内核尚未就绪，请稍后重试。"));
+    // Relay transport uses its own persistent X25519 identity. Never gate it
+    // on Jami registration. Disabling relay must also work without the engine.
+    if (!accountId_.isEmpty()) daemon_.configurePrivateNetwork(accountId_, networkConfig_, false);
+    assistedConnection_ = enabled;
+    if (!saveProfile()) {
+        assistedConnection_ = !enabled;
+        setError(tr("连接模式无法保存到本机，请检查加密存储和剩余空间"));
         return false;
     }
-    assistedConnection_ = enabled;
+    selfTestPassed_ = false;
+    selfTestPacketId_.clear();
     peerProbePacketId_.clear();
     peerProbeStatus_.clear();
     emit peerProbeStatusChanged();
     relay_.setEnabled(enabled);
-    saveProfile();
     networkStatus_ = enabled ? tr("辅助连接正在建立 — 通过你的加密中继")
                              : tr("纯直连 — 不使用公共引导或中继");
     emit assistedConnectionChanged();

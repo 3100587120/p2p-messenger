@@ -11,10 +11,14 @@ on:
         description: Ephemeral Windows controller invitation on another network
         required: true
         type: string
+      headless:
+        description: Verify APK Keystore, TLS and controller without GUI (not UI acceptance)
+        type: boolean
+        default: false
 
 jobs:
   android:
-    runs-on: macos-14
+    runs-on: ${{ inputs.headless && 'ubuntu-24.04' || 'macos-14' }}
     timeout-minutes: 20
     permissions:
       contents: write # The APK is in a draft release, visible only to writers.
@@ -25,18 +29,25 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: gh release download "$RELEASE_TAG" --pattern '*.apk' --dir runtime-apk
+      - name: Enable Linux emulator acceleration
+        if: inputs.headless
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
       - name: Run exact APK on an ARM64 Android system
         uses: reactivecircus/android-emulator-runner@v2
         env:
           RECEIVER_INVITE_CODE: ${{ inputs.receiver_invite_code }}
+          HEADLESS: ${{ inputs.headless }}
         with:
-          api-level: 31
+          api-level: ${{ inputs.headless && 30 || 31 }}
           target: google_apis
-          arch: arm64-v8a
+          arch: ${{ inputs.headless && 'x86_64' || 'arm64-v8a' }}
           profile: pixel_2
           emulator-boot-timeout: 900
           # GitHub's Apple Silicon VMs have no nested Hypervisor.framework.
-          emulator-options: -no-accel -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot -camera-back none
+          emulator-options: ${{ inputs.headless && '' || '-no-accel' }} -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot -camera-back none
           script: bash scripts/test-android-runtime.sh
       - name: Save runtime evidence
         if: always()

@@ -6,6 +6,7 @@
 #include <QNetworkProxyQuery>
 #include <QUrlQuery>
 #include <QUuid>
+#include <QSslSocket>
 
 namespace {
 constexpr auto outboxSlot = "__relay_outbox";
@@ -156,6 +157,13 @@ void RelayClient::connectNow()
 {
     if (!enabled_ || !isReady() || !hasEndpoint() ||
         socket_.state() != QAbstractSocket::UnconnectedState) return;
+    if (endpoint_.scheme() == QStringLiteral("wss") && !QSslSocket::supportsSsl()) {
+        if (!failureReported_) {
+            failureReported_ = true;
+            emit errorOccurred(tr("安全连接组件未能加载，无法连接中继。请安装包含 TLS 组件的新版安装包；不要关闭证书验证。"));
+        }
+        return;
+    }
     auto url = endpoint_;
     url.setPath(QStringLiteral("/connect"));
     QUrlQuery query;
