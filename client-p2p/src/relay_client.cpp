@@ -73,7 +73,7 @@ RelayClient::RelayClient(LocalVault& vault, QObject* parent)
         if (!enabled_) return;
         if (!failureReported_) {
             failureReported_ = true;
-            emit errorOccurred(tr("无法及时连接中继 %1。可能是网络、DNS 或服务不可达；并非好友拒绝。请使用当前网络可直接访问的中继地址。已保存的好友申请会在恢复连接后重发。").arg(endpoint_.host()));
+            emit errorOccurred(tr("无法及时连接辅助服务。可能是网络、DNS 或服务不可达；并非好友拒绝。请检查网络连接，已保存的好友申请会在恢复连接后重发。"));
         }
         refreshConnection();
     };

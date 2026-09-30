@@ -23,6 +23,7 @@
 #include "account_manager.h"
 #include "voice_engine.h"
 #include "background_session.h"
+#include "screenshot_service.h"
 
 class VoiceEngineRegression {
 public:
@@ -539,6 +540,15 @@ int main(int argc, char** argv)
     QTemporaryDir root(QDir::tempPath() + "/friend-flow-XXXXXX");
     if (!root.isValid()) return 2;
     qputenv("P2P_MESSENGER_DATA_ROOT", root.path().toUtf8());
+    if(app.arguments().contains("--screenshot-region-regression")) {
+        QImage desktop(100,80,QImage::Format_RGB32);desktop.fill(Qt::blue);
+        const auto image=ScreenshotService::selectedRegion(desktop,QPoint(10,20),QPoint(40,50));
+        const auto reverse=ScreenshotService::selectedRegion(desktop,QPoint(40,50),QPoint(10,20));
+        const auto clipped=ScreenshotService::selectedRegion(desktop,QPoint(-10,-20),QPoint(19,29));
+        if(image.size()!=QSize(31,31)||image!=reverse||image.pixelColor(0,0)!=QColor(Qt::blue)||clipped.size()!=QSize(20,30))return 22;
+        if(!ScreenshotService::selectedRegion(desktop,QPoint(10,10),QPoint(10,10)).isNull() || !ScreenshotService::selectedRegion(desktop,QPoint(-20,-20),QPoint(-1,-1)).isNull())return 22;
+        std::cout<<"SCREENSHOT_REGION_REVERSE_CLAMP_SMALL_SELECTION=PASS"<<std::endl;return 0;
+    }
     if(app.arguments().contains("--welcome-removal-regression"))return welcomeRemovalRegression(root.path());
     if(app.arguments().contains("--local-login-history-regression"))return localLoginHistoryRegression(root.path());
     if(app.arguments().contains("--interaction-regression"))return interactionRegression(root.path());

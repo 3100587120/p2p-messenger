@@ -829,6 +829,7 @@ MessengerController::MessengerController(QObject* parent)
     if (assistedConnection_ && !relay_.hasEndpoint()) {
         networkStatus_ = tr("辅助中继尚未部署，不能发送异网申请");
         emit networkStatusChanged();
+        setError(tr("此安装包没有可用的内置连接服务，请更新安装包；这不是好友拒绝或账号丢失。"));
     }
     if (!accountId_.isEmpty() && !profileName_.isEmpty())
         daemon_.setIdentityAlias(accountId_, profileName_);
@@ -997,17 +998,16 @@ void MessengerController::playVoice(const QString& data) { if (callState_ != "id
 void MessengerController::captureScreenshot() {
 #ifdef Q_OS_WIN
     discardScreenshot();
-    if(activeContactId_.isEmpty()){setError(tr("请先选择好友或群聊"));return;}
-    auto* window=QGuiApplication::focusWindow();auto* screen=window?window->screen():QGuiApplication::primaryScreen();
-    if(!screen){setError(tr("没有可截图的显示器"));return;}
-    const auto image=screen->grabWindow(0).toImage();
-    if(image.isNull()){setError(tr("屏幕截图失败，请检查远程桌面或显示权限"));return;}
-    QByteArray bytes;QBuffer buffer(&bytes);buffer.open(QIODevice::WriteOnly);
-    if(!image.scaled(1600,1600,Qt::KeepAspectRatio,Qt::SmoothTransformation).save(&buffer,"JPEG",85)){setError(tr("截图转换失败"));return;}
-    screenshotPreview_="data:image/jpeg;base64,"+QString::fromLatin1(bytes.toBase64());emit screenshotChanged();
+    emit screenshotSelectionRequested();
 #else
     setError(tr("此设备不支持桌面截图"));
 #endif
+}
+void MessengerController::acceptScreenshot(const QImage& image) {
+    if(image.isNull())return;
+    QByteArray bytes;QBuffer buffer(&bytes);buffer.open(QIODevice::WriteOnly);
+    if(!image.scaled(1600,1600,Qt::KeepAspectRatio,Qt::SmoothTransformation).save(&buffer,"JPEG",85)){setError(tr("截图转换失败"));return;}
+    screenshotPreview_="data:image/jpeg;base64,"+QString::fromLatin1(bytes.toBase64());emit screenshotChanged();
 }
 bool MessengerController::sendScreenshot() {
     if(screenshotPreview_.isEmpty())return false;

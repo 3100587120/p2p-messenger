@@ -3,6 +3,12 @@ param([switch]$SkipDeploy, [switch]$BuildE2E, [switch]$BuildRelayTests, [switch]
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
+if ([string]::IsNullOrWhiteSpace($RelayUrl)) {
+    $RelayUrl = (Get-Content -LiteralPath (Join-Path $repoRoot 'client-p2p/relay-deployment.json') -Raw | ConvertFrom-Json).url
+}
+if ($RelayUrl -notmatch '^wss://[A-Za-z0-9.-]+(:[0-9]+)?/?$') {
+    throw 'A valid product relay deployment is required; refusing an unconfigured build.'
+}
 $daemonRoot = Join-Path $repoRoot 'daemon'
 $buildRoot = Join-Path $repoRoot 'work/client-msvc'
 $qtRoot = Join-Path $repoRoot 'work/qt/6.7.3/msvc2019_64'
@@ -70,6 +76,7 @@ $configureArgs = @(
     "-DCMAKE_EXE_LINKER_FLAGS_INIT=/LIBPATH:D:/WinSDK10/Lib/$sdkVersion/um/x64 /LIBPATH:D:/WinSDK10/Lib/$sdkVersion/ucrt/x64",
     '-DP2P_MESSENGER_WITH_DAEMON=ON',
     "-DP2P_MESSENGER_DEFAULT_RELAY_URL=$RelayUrl",
+    '-DP2P_MESSENGER_REQUIRE_DEFAULT_RELAY=ON',
     '-DCMAKE_AUTOGEN_PARALLEL=1',
     "-DP2P_MESSENGER_BUILD_DAEMON_E2E=$($BuildE2E.IsPresent.ToString().ToUpperInvariant())",
     "-DP2P_MESSENGER_BUILD_RELAY_TESTS=$($BuildRelayTests.IsPresent.ToString().ToUpperInvariant())",

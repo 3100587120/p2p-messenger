@@ -16,6 +16,10 @@ set(P2P_MESSENGER_DAEMON_INCLUDE_DIR "" CACHE PATH "Directory containing jami/ja
 set(P2P_MESSENGER_DAEMON_LIBRARY "" CACHE FILEPATH "Private daemon library")
 set(P2P_MESSENGER_ANDROID_OPENSSL_DIR "" CACHE PATH "Directory containing Android libcrypto_3.so and libssl_3.so")
 set(P2P_MESSENGER_DEFAULT_RELAY_URL "" CACHE STRING "Operator-deployed WSS relay URL, empty for unconfigured builds")
+option(P2P_MESSENGER_REQUIRE_DEFAULT_RELAY "Reject an unconfigured product build" OFF)
+if(P2P_MESSENGER_REQUIRE_DEFAULT_RELAY AND NOT P2P_MESSENGER_DEFAULT_RELAY_URL)
+    message(FATAL_ERROR "Product relay URL is empty; refusing to build an unusable assisted client")
+endif()
 if(P2P_MESSENGER_DEFAULT_RELAY_URL AND
    NOT P2P_MESSENGER_DEFAULT_RELAY_URL MATCHES "^wss://[A-Za-z0-9.-]+(:[0-9]+)?/?$")
     message(FATAL_ERROR "P2P_MESSENGER_DEFAULT_RELAY_URL must be a bare wss:// hostname, with an optional port")
@@ -30,6 +34,7 @@ qt_add_executable(P2PMessenger
     src/background_session.cpp src/background_session.h
     src/account_manager.cpp src/account_manager.h
     src/main.cpp
+    src/screenshot_service.cpp src/screenshot_service.h
     src/photo_picker.cpp src/photo_picker.h
     src/notification_service.cpp src/notification_service.h
     src/android_acceptance.cpp src/android_acceptance.h
@@ -193,6 +198,7 @@ endif()
 if(P2P_MESSENGER_BUILD_RELAY_TESTS AND WIN32)
     if(P2P_MESSENGER_WITH_DAEMON)
         set(_friend_flow_sources
+            src/screenshot_service.cpp src/screenshot_service.h
             src/background_session.cpp src/background_session.h
             src/account_manager.cpp src/account_manager.h
             tests/friend_flow_test.cpp

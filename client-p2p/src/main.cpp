@@ -4,6 +4,9 @@
 #include <QQmlContext>
 #include <QFile>
 #include <QTimer>
+#include <QTemporaryDir>
+#include <QDir>
+#include <QFileInfo>
 #include <QScopedValueRollback>
 #ifdef Q_OS_ANDROID
 #include <QJniObject>
@@ -18,6 +21,7 @@
 #include "notification_service.h"
 #include "background_session.h"
 #include "photo_picker.h"
+#include "screenshot_service.h"
 #include <cstring>
 #include <memory>
 #include <QJsonDocument>
@@ -40,6 +44,41 @@ void traceStartup(const char* stage)
 int main(int argc, char* argv[])
 {
     traceStartup("entry");
+#ifdef Q_OS_WIN
+    for(int i=1;i<argc;++i)if(std::strcmp(argv[i],"--connection-config-report")==0) {
+        QCoreApplication app(argc,argv);
+        QCoreApplication::setApplicationName(QStringLiteral("P2P Messenger"));
+        QCoreApplication::setOrganizationName(QStringLiteral("P2P Messenger"));
+        AccountManager accounts;
+        if(!QFileInfo::exists(QDir(accounts.activeRoot()).filePath("vault/master-key.protected")))return 6;
+        LocalVault vault(accounts.activeRoot());const auto rows=vault.loadConversation("__profile");
+        if(!vault.isReady() || rows.isEmpty())return 6;
+        const auto profile=rows.first().toMap(),network=profile.value("network").toMap();
+        const QUrl saved(network.value("relayEndpoint").toString());
+        std::cout<<QJsonDocument(QJsonObject{{"profileReadable",true},{"registered",!profile.value("uid").toString().isEmpty()},{"assisted",network.value("assistedConnection",true).toBool()},{"savedEndpointPresent",!saved.isEmpty()},{"savedEndpointSecure",saved.scheme()=="wss" && !saved.host().isEmpty()}}).toJson(QJsonDocument::Compact).constData()<<std::endl;
+        return 0;
+    }
+    // Validate this exact deliverable, not a test binary with an injected URL.
+    // Temporary identity only: no real accounts, credentials or history touched.
+    for(int i=1;i<argc;++i)if(std::strcmp(argv[i],"--verify-default-relay")==0) {
+        QCoreApplication app(argc,argv);
+        QTemporaryDir temporary(QDir::tempPath()+"/packaged-relay-XXXXXX");
+        if(!temporary.isValid())return 6;
+        qunsetenv("P2P_MESSENGER_RELAY_URL");qunsetenv("P2P_MESSENGER_OWNER_DEVICE_ROOT");
+        qputenv("P2P_MESSENGER_DATA_ROOT",temporary.path().toUtf8());
+        qputenv("P2P_MESSENGER_DISABLE_DIRECT_ENGINE","1");
+        MessengerController controller;
+        if(controller.relayEndpoint().isEmpty()){std::cerr<<"PACKAGED_DEFAULT_RELAY_MISSING"<<std::endl;return 6;}
+        bool passed=false;QTimer poll;poll.setInterval(100);
+        QObject::connect(&poll,&QTimer::timeout,&app,[&]{
+            if(controller.networkStatus().contains(QStringLiteral("自检通过"))){passed=true;app.quit();}
+        });
+        QTimer::singleShot(45000,&app,&QCoreApplication::quit);poll.start();app.exec();
+        std::cout<<(passed?"PACKAGED_DEFAULT_RELAY_AUTHENTICATED_ROUNDTRIP=PASS":"PACKAGED_DEFAULT_RELAY_AUTHENTICATED_ROUNDTRIP=FAIL")<<std::endl;
+        if(!passed)std::cerr<<controller.lastError().toStdString()<<std::endl;
+        return passed?0:6;
+    }
+#endif
 #ifdef Q_OS_ANDROID
     // A QtService context is not an Activity and has no getIntent(). Dispatch
     // BEFORE debug acceptance code or any Activity/QGuiApplication operations.
@@ -122,12 +161,20 @@ int main(int argc, char* argv[])
     auto messenger = std::make_unique<MessengerController>();
     traceStartup("controller-ready");
     NotificationService notifications;
+    ScreenshotService screenCapture;
     QQmlApplicationEngine engine;
     notifications.setSessionRoot(accounts.baseRoot());
     engine.rootContext()->setContextProperty(QStringLiteral("notificationService"),&notifications);
+    engine.rootContext()->setContextProperty(QStringLiteral("screenCapture"),&screenCapture);
+    const auto restoreScreenshotWindow=[&]{for(auto* object:engine.rootObjects())QMetaObject::invokeMethod(object,"finishScreenshotSelection");};
+    QObject::connect(&screenCapture,&ScreenshotService::requested,&engine,[&]{for(auto* object:engine.rootObjects())QMetaObject::invokeMethod(object,"beginScreenshotSelection");});
+    QObject::connect(&screenCapture,&ScreenshotService::selected,&engine,[&](const QImage& image){restoreScreenshotWindow();messenger->acceptScreenshot(image);});
+    QObject::connect(&screenCapture,&ScreenshotService::canceled,&engine,restoreScreenshotWindow);
+    QObject::connect(&screenCapture,&ScreenshotService::error,&engine,[&](const QString& reason){restoreScreenshotWindow();messenger->screenshotFailed(reason);});
     engine.rootContext()->setContextProperty(QStringLiteral("messenger"), messenger.get());
     engine.rootContext()->setContextProperty(QStringLiteral("accountManager"), &accounts);
     const auto bindProfile = [&] {
+        QObject::connect(messenger.get(),&MessengerController::screenshotSelectionRequested,&screenCapture,&ScreenshotService::start);
         QObject::connect(messenger.get(), &MessengerController::incomingNotice, &notifications, &NotificationService::show);
         QObject::connect(messenger.get(), &MessengerController::notificationPermissionRequested, &notifications, &NotificationService::requestPermission);
         QObject::connect(messenger.get(),&MessengerController::uidChanged,&notifications,[&]{if(!messenger->userCode().isEmpty())notifications.accountReady();});
@@ -145,6 +192,7 @@ int main(int argc, char* argv[])
             // Replacing the QQuickWindow can emit Hidden/Active synchronously.
             // That is not a real handover to the Android background process.
             QScopedValueRollback<bool> rebuilding(rebuildingProfile, true);
+            screenCapture.cancel();
             const auto previousContact=messenger->activeContactId();
             // Keep the native Android window/surface alive during every handover.
             messenger->suspendForBackground();

@@ -5,6 +5,7 @@
 #include <QStringList>
 #include <QVariantList>
 #include <QTimer>
+#include <QImage>
 
 #include "daemon_bridge.h"
 #include "gateway_mapper.h"
@@ -70,6 +71,8 @@ public:
     QString playingVoiceData() const {return playingVoice()?playingVoiceData_:QString();}
     QString screenshotPreview() const {return screenshotPreview_;}
     Q_INVOKABLE void captureScreenshot();
+    void acceptScreenshot(const QImage& image);
+    void screenshotFailed(const QString& reason){setError(reason);}
     Q_INVOKABLE bool sendScreenshot();
     Q_INVOKABLE void discardScreenshot(){screenshotPreview_.clear();emit screenshotChanged();}
     Q_INVOKABLE void stopVoicePlayback(){voice_.stopPlayback();}
@@ -160,6 +163,7 @@ public:
     Q_INVOKABLE bool testPeerConnection(const QString& invite);
 
 signals:
+    void screenshotSelectionRequested();
     void operationCompleted(const QString& title,const QString& message);
     void screenshotChanged();
     void groupAvatarPickerRequested();

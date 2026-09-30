@@ -21,6 +21,8 @@ ApplicationWindow {
     property color accent: "#1685ef"
     property color subdued: "#758398"
     property string accountError: ""
+    function beginScreenshotSelection(){if(Qt.platform.os!=="windows" || screenshotDelay.running)return;screenshotSheet.close();window.showMinimized();screenshotDelay.restart()}
+    function finishScreenshotSelection(){window.showNormal();window.requestActivate()}
     function openPeerDetails() {peerDetails.messageIndex=-1;peerDetails.open()}
     function openMessageSender(index) {peerDetails.messageIndex=index;peerDetails.open()}
     function resetSession() {screenshotDelay.stop();screenshotSheet.close();account.close();login.close();loginProgress.close();requests.close();call.close();failure.close();notice.close();peerDetails.close();forwardPicker.close();removeContactDialog.close();photoPreview.close();nickname.close();emojis.close();addFriend.close();group.close();messageMenu.close();accountName.text=messenger.profileName;accountPassword.text="";accountPasswordConfirm.text="";loginPassword.text="";loginUid.text=messenger.loginUid;voiceInput=false;expandedTools=false;if(!messenger.activeContactId.length)showThread=false;if(messenger.loginPending)loginProgress.open();else if(!messenger.profileName.length)account.open()}
@@ -70,6 +72,7 @@ ApplicationWindow {
         function onLastErrorChanged() { if (messenger.lastError.length) { window.accountError = ""; failure.open() } }
         function onPendingRequestsChanged() { if (messenger.pendingRequests.length) requests.open() }
         function onVoiceChanged() { if (messenger.callState !== "idle") call.open(); else call.close() }
+        function onScreenshotChanged(){if(messenger.screenshotPreview.length){window.finishScreenshotSelection();screenshotSheet.open()}}
         function onAvatarPickerRequested() { avatarPicker.groupPicture=false;avatarPicker.open() }
         function onGroupAvatarPickerRequested() {avatarPicker.groupPicture=true;avatarPicker.open()}
         function onAttachmentPickerRequested(sticker) { if (sticker) stickerPicker.open(); else filePicker.open() }
@@ -150,6 +153,7 @@ ApplicationWindow {
             Label {visible:Qt.platform.os==="android" && typeof notificationService!=="undefined";text:typeof notificationService!=="undefined"?notificationService.backgroundStatus:"";wrapMode:Text.Wrap;Layout.fillWidth:true;color:window.subdued}
             Label { visible: Qt.platform.os === "android"; text: "关闭界面后由后台服务接收。请允许通知和后台运行；系统强行停止或限制后台会阻止接收。"; font.pixelSize: 12; color: window.subdued; wrapMode: Text.Wrap; Layout.fillWidth: true }
             Label { text: messenger.networkStatus; color: window.subdued; wrapMode: Text.Wrap; Layout.fillWidth: true }
+            Label {visible:Qt.platform.os==="windows";text:typeof screenCapture!=="undefined" && screenCapture.shortcutText.length?"自由截图快捷键："+screenCapture.shortcutText:"截图快捷键被占用，请使用聊天工具中的截图按钮";color:window.subdued;wrapMode:Text.Wrap;Layout.fillWidth:true}
             Label { text: "辅助模式通过中继转发加密内容；纯直连不使用中继，跨网成功取决于网络条件。"; wrapMode: Text.Wrap; Layout.fillWidth: true }
             CheckBox { id: customRelay; text: "使用自己的中继"; checked: messenger.customRelay }
             TextField { id: relayAddress; visible: customRelay.checked; placeholderText: "wss://你的服务地址"; Layout.fillWidth: true; Layout.minimumWidth: 0; inputMethodHints: Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText }
@@ -258,9 +262,9 @@ ApplicationWindow {
         contentItem: ColumnLayout { Image { source: photoPreview.photo; Layout.fillWidth: true; Layout.fillHeight: true; fillMode: Image.PreserveAspectFit } Action {text:"关闭";Layout.alignment:Qt.AlignHCenter;onClicked:photoPreview.close()} }
     }
     Sheet{id:screenshotSheet;title:"截图预览";standardButtons:Dialog.Cancel;onRejected:messenger.discardScreenshot()
-        contentItem:ColumnLayout{Image{source:messenger.screenshotPreview;Layout.fillWidth:true;Layout.preferredHeight:280;fillMode:Image.PreserveAspectFit}Label{text:"确认后才会发送给当前会话。";color:window.subdued}Action{text:"发送截图";iconName:"send";Layout.fillWidth:true;onClicked:if(messenger.sendScreenshot())screenshotSheet.close()}}
+        contentItem:ColumnLayout{Image{source:messenger.screenshotPreview;Layout.fillWidth:true;Layout.preferredHeight:280;fillMode:Image.PreserveAspectFit}Label{text:"已复制到剪贴板，确认后才会发送给当前会话。";wrapMode:Text.Wrap;Layout.fillWidth:true;color:window.subdued}Action{text:"发送截图";enabled:messenger.activeContactId.length>0;iconName:"send";Layout.fillWidth:true;onClicked:if(messenger.sendScreenshot())screenshotSheet.close()}}
     }
-    Timer{id:screenshotDelay;interval:350;onTriggered:{messenger.captureScreenshot();window.showNormal();if(messenger.screenshotPreview.length)screenshotSheet.open()}}
+    Timer{id:screenshotDelay;interval:350;onTriggered:messenger.captureScreenshot()}
     Menu {id:messageMenu;property int messageIndex:-1
         MenuItem{text:"复制";onTriggered:messenger.copyMessage(messageMenu.messageIndex)}
         MenuItem{text:"转发";onTriggered:forwardPicker.open()}
@@ -410,7 +414,7 @@ ApplicationWindow {
                         Repeater {model: (Qt.platform.os === "android" ? [{name:"照片",icon:"photo"},{name:"拍照",icon:"camera"},{name:"文件",icon:"file"},{name:"语音通话",icon:"phone"},{name:"表情",icon:"emoji"},{name:"群昵称",icon:"group"}] : [{name:"照片",icon:"photo"},{name:"文件",icon:"file"},{name:"截图",icon:"screenshot"},{name:"语音通话",icon:"phone"},{name:"表情",icon:"emoji"},{name:"群昵称",icon:"group"}]).filter(function(item){return item.icon!=="group" || messenger.activeIsGroup})
                             delegate:Button {required property var modelData;required property int index;Layout.fillWidth:true;Layout.fillHeight:true;flat:true
                                 contentItem:Column{spacing:7;FeatureIcon{anchors.horizontalCenter:parent.horizontalCenter;glyph:modelData.icon;width:26;height:26}Text{anchors.horizontalCenter:parent.horizontalCenter;text:modelData.name;font.pixelSize:12;color:"#44566e"}}
-                                onClicked:{window.expandedTools=false;if(modelData.icon==="screenshot"){window.showMinimized();screenshotDelay.restart()}else if(modelData.icon==="photo")messenger.choosePhoto(false);else if(modelData.icon==="camera")messenger.choosePhoto(true);else if(modelData.icon==="file")messenger.chooseAttachment(false);else if(modelData.icon==="phone")messenger.startCall();else if(modelData.icon==="emoji")emojis.open();else nickname.open()}
+                                onClicked:{window.expandedTools=false;if(modelData.icon==="screenshot")window.beginScreenshotSelection();else if(modelData.icon==="photo")messenger.choosePhoto(false);else if(modelData.icon==="camera")messenger.choosePhoto(true);else if(modelData.icon==="file")messenger.chooseAttachment(false);else if(modelData.icon==="phone")messenger.startCall();else if(modelData.icon==="emoji")emojis.open();else nickname.open()}
                             }
                         }
                     }

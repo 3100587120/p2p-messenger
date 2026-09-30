@@ -5,6 +5,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path $PSScriptRoot -Parent
+if ([string]::IsNullOrWhiteSpace($RelayUrl)) {
+    $RelayUrl = (Get-Content -LiteralPath (Join-Path $repo 'client-p2p/relay-deployment.json') -Raw | ConvertFrom-Json).url
+}
+if ($RelayUrl -notmatch '^wss://[A-Za-z0-9.-]+(:[0-9]+)?/?$') {
+    throw 'A valid product relay deployment is required; refusing an unconfigured build.'
+}
 if (-not $BuildRoot) { $BuildRoot = Join-Path $repo 'work' }
 $env:TEMP = Join-Path $BuildRoot 'build-temp'
 $env:TMP = $env:TEMP
@@ -81,6 +87,7 @@ if ($LASTEXITCODE) { throw 'Android engine strip failed' }
     '-DP2P_MESSENGER_WITH_DAEMON=ON' `
     "-DP2P_MESSENGER_ANDROID_OPENSSL_DIR=$opensslLib" `
     "-DP2P_MESSENGER_DEFAULT_RELAY_URL=$RelayUrl" `
+    '-DP2P_MESSENGER_REQUIRE_DEFAULT_RELAY=ON' `
     '-DCMAKE_AUTOGEN_PARALLEL=1' `
     "-DP2P_MESSENGER_DAEMON_INCLUDE_DIR=$daemon/src" `
     "-DP2P_MESSENGER_DAEMON_LIBRARY=$enginePackage"
