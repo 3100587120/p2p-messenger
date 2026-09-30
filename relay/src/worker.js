@@ -45,10 +45,11 @@ export class Router {
     let frame;
     try { frame = JSON.parse(data); } catch { socket.send(JSON.stringify({ op: "error", reason: "bad_json" })); return; }
     if (frame?.op === 'admin_directory' && packetId.test(frame.id) && this.directory) {
-      return this.directory.admin(frame.action,frame.timestamp,frame.nonce,frame.mac)
+      return this.directory.admin(frame.action,frame.timestamp,frame.nonce,frame.mac,frame.repairs)
         .then(value=>socket.send(JSON.stringify({op:'admin_directory_result',id:frame.id,...value})))
         .catch(()=>socket.send(JSON.stringify({op:'admin_directory_denied',id:frame.id})));
     }
+    if(frame?.op==='friend_repair_get' && packetId.test(frame.id) && this.directory){return this.directory.friendRepair(sender).then(repair=>socket.send(JSON.stringify({op:'friend_repair_result',id:frame.id,repair})));}
     if (['register','lookup','login_info','login','contacts_get','contacts_put'].includes(frame?.op)) {
       if (!packetId.test(frame.id)) return;
       if (!this.directory) { socket.send(JSON.stringify({ op: 'directory_error', id: frame.id, reason: 'directory_unavailable' })); return; }

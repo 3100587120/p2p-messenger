@@ -64,6 +64,10 @@ qt_add_qml_module(P2PMessenger
         qml/Main.qml
         qml/FeatureIcon.qml
 )
+qt_add_resources(P2PMessenger "offline_assets" PREFIX "/" FILES
+    assets/fonts/NotoColorEmoji_WindowsCompatible.ttf
+    assets/fonts/OFL.txt
+    windows/icon.ico)
 
 target_link_libraries(P2PMessenger PRIVATE Qt6::Quick Qt6::QuickControls2 Qt6::Network Qt6::WebSockets Qt6::Multimedia)
 if(ANDROID)

@@ -39,6 +39,8 @@ QString safeAvatar(const QString& input) {
     const auto size = reader.size();
     return size.isValid() && size.width() <= 128 && size.height() <= 128 && !reader.read().isNull() ? input : QString {};
 }
+QString displayedGroupNumber(const QString& id){if(id.isEmpty())return {};bool ok=false;const auto n=QCryptographicHash::hash(id.toUtf8(),QCryptographicHash::Sha256).toHex().first(16).toULongLong(&ok,16);return ok?QString::number(1000000000000000ULL+n%9000000000000000ULL):QString();}
+QString numericUid(const QJsonObject& message){const auto uid=message.value("uid").toString();return QRegularExpression("^[1-9][0-9]{0,15}$").match(uid).hasMatch()?uid:QString();}
 QVariantMap memberSnapshot(const QVariantMap& group,const QString& sender,const QByteArray& key) {
     auto details=group.value("memberProfiles").toMap().value(sender).toMap();
     details.insert("uri",sender);details.insert("relayPublic","SD1-"+QString::fromLatin1(key.toBase64(QByteArray::Base64UrlEncoding|QByteArray::OmitTrailingEquals)));
@@ -131,6 +133,23 @@ MessengerController::MessengerController(QObject* parent)
     , files_(vault_,relay_,this)
 {
     connect(&files_,&FileStream::error,this,&MessengerController::setError);
+    connect(&relay_,&RelayClient::friendRepairReceived,this,[this](const QString& ticket,const QVariantMap& repair){
+        if(appliedFriendRepairs_.contains(ticket) || repair.value("uid").toString()!=uid_ || !QStringList{"1","11","12","13"}.contains(uid_))return;
+        const auto peers=repair.value("peers").toList();if(peers.size()!=(uid_=="1"?3:1))return;
+        QStringList seen;for(const auto& value:peers){const auto peer=value.toMap();const auto uid=peer.value("uid").toString();if(!QStringList{"1","11","12","13"}.contains(uid) || uid==uid_ || (uid_!="1" && uid!="1") || seen.contains(uid) || RelayClient::publicKeyFromCode(peer.value("code").toString()).isEmpty())return;seen.append(uid);}
+        const auto previous=contacts_;const auto previousApplied=appliedFriendRepairs_;const auto oldRequests=pendingRequests_;const auto oldKeys=pendingRelayRequests_;const auto oldProfiles=pendingRelayProfiles_;
+        for(const auto& value:peers){const auto peer=value.toMap();const auto code=peer.value("code").toString(),id=RelayClient::idForPublicKey(RelayClient::publicKeyFromCode(code));bool found=false;
+            // A peer-provided UID is display metadata, not proof of identity. Do not
+            // merge another identity's history merely because it claims this UID.
+            for(auto& contactValue:contacts_){auto row=contactValue.toMap();if(row.value("group").toBool() || (row.value("uri")!=id && row.value("relayPublic")!=code))continue;
+                row.insert("uri",id);row.insert("relayPublic",code);row.insert("peerUid",peer.value("uid"));row.insert("peerName",peer.value("name"));row.insert("ready",true);row.insert("transport","relay");row.insert("status",tr("已验证"));row.remove("requestPacketId");if(!row.value("hasRemark").toBool())row.insert("name",peer.value("name"));contactValue=row;found=true;break;
+            }
+            if(!found){auto row=contact(QUuid::createUuid().toString(QUuid::WithoutBraces),peer.value("name").toString(),tr("已验证"));row.insert("uri",id);row.insert("relayPublic",code);row.insert("peerUid",peer.value("uid"));row.insert("peerName",peer.value("name"));row.insert("ready",true);row.insert("transport","relay");contacts_.append(row);}
+            pendingRequests_.removeAll(id);pendingRelayRequests_.remove(id);pendingRelayProfiles_.remove(id);
+        }
+        appliedFriendRepairs_.append(ticket);if(!saveProfile()){contacts_=previous;appliedFriendRepairs_=previousApplied;pendingRequests_=oldRequests;pendingRelayRequests_=oldKeys;pendingRelayProfiles_=oldProfiles;setError(tr("好友关系修复未能保存，请检查本机空间"));return;}
+        emit contactsChanged();emit activeContactChanged();emit pendingRequestsChanged();broadcastProfile();emit operationCompleted(tr("好友关系已修复"),tr("UID 1 与 11–13 的已授权好友关系已恢复，聊天记录未清空"));
+    });
     connect(&files_,&FileStream::fileReady,this,[this](const QString& contactId,const QVariantMap& message){
         const auto stored=contactId==activeContactId_?messages_:vault_.loadConversation(contactId);
         for(const auto& value:stored)if(value.toMap().value("messageId")==message.value("messageId") && value.toMap().value("senderId")==message.value("senderId"))return;
@@ -219,7 +238,7 @@ MessengerController::MessengerController(QObject* parent)
             if(row.value("group").toBool()){if(row.value("groupId").toString().isEmpty() || row.value("members").toList().size()>20)return;for(const auto& code:row.value("members").toList())if(RelayClient::publicKeyFromCode(code.toString()).isEmpty())return;}
             validated.append(row);
         }
-        contacts_=validated;leftGroups_=restored.value("leftGroups").toStringList();profileAvatar_=safeAvatar(restored.value("avatar").toString());
+        contacts_=validated;leftGroups_=restored.value("leftGroups").toStringList();appliedFriendRepairs_=restored.value("appliedFriendRepairs").toStringList();removedGroupRevisions_=restored.value("removedGroupRevisions").toMap();profileAvatar_=safeAvatar(restored.value("avatar").toString());
         if(!saveProfile()){contacts_.clear();setError(tr("好友备份已解密，但本机无法保存，请检查空间"));return;}
         emit contactsChanged();emit activeContactChanged();
     });
@@ -270,6 +289,7 @@ MessengerController::MessengerController(QObject* parent)
             const auto avatar = safeAvatar(message.value(QStringLiteral("avatar")).toString());
             pendingRelayProfiles_.insert(senderId, QVariantMap {
                 {QStringLiteral("name"), message.value(QStringLiteral("name")).toString().left(64)},
+                {QStringLiteral("peerUid"),numericUid(message)},
                 {QStringLiteral("avatar"), avatar.size() <= 32768 ? avatar : QString {}}});
             pendingRelayRequests_.insert(senderId, QString::fromLatin1(senderPublic.toBase64(
                 QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals)));
@@ -296,6 +316,7 @@ MessengerController::MessengerController(QObject* parent)
                 entry.insert(QStringLiteral("status"), tr("已验证"));
                 entry.insert("avatar", safeAvatar(message.value("avatar").toString()));
                 entry.insert("peerName", message.value("name").toString().left(64));
+                if(!numericUid(message).isEmpty())entry.insert("peerUid",numericUid(message));
                 if (!entry.value("hasRemark").toBool() && !entry.value("peerName").toString().trimmed().isEmpty()) entry.insert("name",entry.value("peerName"));
                 item = entry;
                 if (!saveProfile()) {
@@ -318,6 +339,7 @@ MessengerController::MessengerController(QObject* parent)
                 const auto previous = item;
                 entry.insert("avatar", safeAvatar(message.value("avatar").toString()));
                 entry.insert("peerName", message.value("name").toString().left(64));
+                if(!numericUid(message).isEmpty())entry.insert("peerUid",numericUid(message));
                 if (!entry.value("hasRemark").toBool() && !entry.value("peerName").toString().trimmed().isEmpty()) entry.insert("name",entry.value("peerName"));
                 item = entry;
                 if (!saveProfile()) { item = previous; relay_.rejectCurrentPacket(); return; }
@@ -327,7 +349,7 @@ MessengerController::MessengerController(QObject* parent)
         }
         if (type == QStringLiteral("group_invite")) {
             const auto groupId = message.value(QStringLiteral("groupId")).toString();
-            if(leftGroups_.contains(groupId))return;
+            if(removedGroupRevisions_.contains(groupId) && message.value("membersRevision").toInteger()<=removedGroupRevisions_.value(groupId).toLongLong())return;
             const auto members = message.value(QStringLiteral("members")).toArray();
             if (groupId.isEmpty() || groupId.size() > 80 || members.isEmpty() || members.size() > 20) return;
             bool senderIncluded = false, selfIncluded = false;
@@ -339,6 +361,8 @@ MessengerController::MessengerController(QObject* parent)
                 selfIncluded |= id == relay_.identityId();
             }
             if (!senderIncluded || !selfIncluded) return;
+            const auto owner=RelayClient::idForPublicKey(RelayClient::publicKeyFromCode(members.first().toString()));
+            if(owner!=senderId || (!message.value("ownerId").toString().isEmpty() && message.value("ownerId").toString()!=owner)){relay_.rejectCurrentPacket();return;}
             for (const auto& item : contacts_)
                 if (item.toMap().value(QStringLiteral("groupId")).toString() == groupId) return;
             const auto previousGroups = pendingRelayGroups_;
@@ -353,7 +377,34 @@ MessengerController::MessengerController(QObject* parent)
                 return;
             }
             emit pendingGroupRequestsChanged();
+            if(!previousGroups.contains(groupId))emit incomingNotice(tr("新的群邀请"),message.value("name").toString().left(64));
             return;
+        }
+        if(type=="group_invite_request" || type=="group_remove_request"){
+            const auto groupId=message.value("groupId").toString();
+            for(const auto& value:contacts_){const auto group=value.toMap();if(!group.value("group").toBool() || group.value("groupId")!=groupId || group.value("ownerId",RelayClient::idForPublicKey(RelayClient::publicKeyFromCode(group.value("members").toList().value(0).toString()))).toString()!=relay_.identityId())continue;
+                bool member=false;for(const auto& code:group.value("members").toList())member|=RelayClient::idForPublicKey(RelayClient::publicKeyFromCode(code.toString()))==senderId;
+                if(!member){relay_.rejectCurrentPacket();return;}
+                if(type=="group_invite_request"){QStringList add;for(const auto& code:message.value("codes").toArray())add.append(code.toString());if(!changeGroupMembers(groupId,add,{}))relay_.rejectCurrentPacket();}
+                else {const auto target=message.value("memberId").toString();if(!group.value("admins").toStringList().contains(senderId) || group.value("admins").toStringList().contains(target)){relay_.rejectCurrentPacket();return;}if(!changeGroupMembers(groupId,{},target))relay_.rejectCurrentPacket();}
+                return;
+            }relay_.rejectCurrentPacket();return;
+        }
+        if(type=="group_members"){
+            const auto groupId=message.value("groupId").toString();
+            for(qsizetype i=0;i<contacts_.size();++i){auto row=contacts_[i].toMap();if(!row.value("group").toBool() || row.value("groupId")!=groupId)continue;
+                const auto owner=row.value("ownerId",RelayClient::idForPublicKey(RelayClient::publicKeyFromCode(row.value("members").toList().value(0).toString()))).toString();
+                if(senderId!=owner || message.value("ownerId").toString()!=owner){relay_.rejectCurrentPacket();return;}
+                const auto revision=message.value("revision").toInteger();if(revision<=row.value("membersRevision").toLongLong())return;
+                const auto incoming=message.value("members").toArray();if(incoming.isEmpty() || incoming.size()>20 || RelayClient::idForPublicKey(RelayClient::publicKeyFromCode(incoming.first().toString()))!=owner){relay_.rejectCurrentPacket();return;}
+                QStringList codes,ids;for(const auto& code:incoming){const auto id=RelayClient::idForPublicKey(RelayClient::publicKeyFromCode(code.toString()));if(id.isEmpty() || ids.contains(id)){relay_.rejectCurrentPacket();return;}codes.append(code.toString());ids.append(id);}
+                const auto previous=contacts_;const auto previousLeft=leftGroups_;const auto previousRemoved=removedGroupRevisions_;const auto localId=row.value("id").toString();
+                if(!ids.contains(relay_.identityId())){contacts_.removeAt(i);removedGroupRevisions_.insert(groupId,revision);if(!leftGroups_.contains(groupId))leftGroups_.append(groupId);}
+                else {row.insert("members",codes);row.insert("membersRevision",revision);auto admins=row.value("admins").toStringList();if(message.contains("admins") && message.value("adminsRevision").toInteger()>=row.value("adminsRevision").toLongLong()){admins.clear();for(const auto& admin:message.value("admins").toArray())if(ids.contains(admin.toString()) && !admins.contains(admin.toString()))admins.append(admin.toString());row.insert("adminsRevision",message.value("adminsRevision").toInteger());}for(qsizetype j=admins.size();j>0;--j)if(!ids.contains(admins[j-1]))admins.removeAt(j-1);row.insert("admins",admins);contacts_[i]=row;}
+                if(!saveProfile()){contacts_=previous;leftGroups_=previousLeft;removedGroupRevisions_=previousRemoved;relay_.rejectCurrentPacket();return;}
+                if(!ids.contains(relay_.identityId())){files_.cancelContact(localId);relay_.cancelContactPackets({},groupId);if(activeContactId_==localId){endCall();activeContactId_.clear();messages_.clear();emit messagesChanged();}emit incomingNotice(tr("群聊成员变更"),tr("你已被移出 %1").arg(row.value("name").toString()));}
+                emit contactsChanged();emit activeContactChanged();return;
+            }return;
         }
         if(type=="group_announcement" || type=="group_admins") {
             for(auto& value:contacts_) {
@@ -391,7 +442,7 @@ MessengerController::MessengerController(QObject* parent)
                 bool member=false;for(const auto& code:row.value("members").toList())member|=RelayClient::idForPublicKey(RelayClient::publicKeyFromCode(code.toString()))==senderId;
                 if(!member){relay_.rejectCurrentPacket();return;}
                 auto profiles=row.value("memberProfiles").toMap();const auto previous=value;
-                profiles.insert(senderId,QVariantMap{{"name",message.value("name").toString().trimmed().left(64)},{"avatar",safeAvatar(message.value("avatar").toString())},{"nickname",message.value("nickname").toString().trimmed().left(64)}});
+                profiles.insert(senderId,QVariantMap{{"name",message.value("name").toString().trimmed().left(64)},{"avatar",safeAvatar(message.value("avatar").toString())},{"nickname",message.value("nickname").toString().trimmed().left(64)},{"peerUid",numericUid(message)}});
                 row.insert("memberProfiles",profiles);value=row;
                 if(!saveProfile()){value=previous;relay_.rejectCurrentPacket();return;}
                 emit contactsChanged();emit activeContactChanged();emit messagesChanged();return;
@@ -561,6 +612,7 @@ MessengerController::MessengerController(QObject* parent)
         if (assistedConnection_ && relay_.isConnected() &&
             packetId == selfTestPacketId_ && state == QStringLiteral("delivered")) {
             selfTestPassed_ = true;
+            broadcastProfile();
             selfTestPacketId_.clear();
             networkStatus_ = tr("辅助连接自检通过 — 等待对方上线");
             emit networkStatusChanged();
@@ -852,6 +904,8 @@ MessengerController::MessengerController(QObject* parent)
             directEndpoint_ = numericEndpointList(profile.value(QStringLiteral("directEndpoint")).toString());
             contacts_ = profile.value(QStringLiteral("contacts")).toList();
             leftGroups_=profile.value("leftGroups").toStringList();
+            appliedFriendRepairs_=profile.value("appliedFriendRepairs").toStringList();
+            removedGroupRevisions_=profile.value("removedGroupRevisions").toMap();
             for(auto& value:contacts_){auto row=value.toMap();if(row.value("transport")=="relay"){row.insert("group",!row.value("groupId").toString().isEmpty());if(row.value("group").toBool() && row.value("ownerId").toString().isEmpty())row.insert("ownerId",RelayClient::idForPublicKey(RelayClient::publicKeyFromCode(row.value("members").toList().value(0).toString())));value=row;}}
             const auto network = profile.value(QStringLiteral("network")).toMap();
             assistedConnection_ = network.value(QStringLiteral("assistedConnection"), true).toBool();
@@ -1233,6 +1287,7 @@ QVariantList MessengerController::contacts() const { return contacts_; }
 QVariantList MessengerController::messages() const { return messages_; }
 QString MessengerController::activeContactId() const { return activeContactId_; }
 QString MessengerController::activeContactName() const { return contactName(activeContactId_); }
+QVariantMap MessengerController::activeContactDetails() const {auto row=activeEntry();if(activeIsGroup())row.insert("groupNumber",displayedGroupNumber(row.value("groupId",row.value("conversationId")).toString()));return row;}
 QString MessengerController::networkStatus() const { return networkStatus_; }
 QString MessengerController::inviteCode() const { return assistedConnection_ ? relay_.inviteCode() : inviteCode_; }
 QString MessengerController::userCode() const { return uid_; }
@@ -1250,7 +1305,7 @@ void MessengerController::broadcastProfile() {
     for (const auto& item : contacts_) {
         const auto row = item.toMap();
         if (row.value("transport") == "relay" && row.value("ready").toBool() && !row.value("group").toBool())
-            relay_.send(RelayClient::publicKeyFromCode(row.value("relayPublic").toString()), QJsonObject {{"type","profile_update"},{"name",profileName_},{"avatar",profileAvatar_}});
+            relay_.send(RelayClient::publicKeyFromCode(row.value("relayPublic").toString()), QJsonObject {{"type","profile_update"},{"name",profileName_},{"avatar",profileAvatar_},{"uid",uid_}});
         else if(row.value("transport")=="relay" && row.value("ready").toBool() && row.value("group").toBool())broadcastGroupMemberProfile(row);
     }
 }
@@ -1695,7 +1750,7 @@ void MessengerController::broadcastGroupProfile() {
 void MessengerController::broadcastGroupMemberProfile(const QVariantMap& group) {
     for(const auto& code:group.value("members").toList()) {
         const auto key=RelayClient::publicKeyFromCode(code.toString());if(RelayClient::idForPublicKey(key)==relay_.identityId())continue;
-        relay_.send(key,QJsonObject{{"type","group_member_profile"},{"groupId",group.value("groupId").toString()},{"name",profileName_},{"avatar",profileAvatar_},{"nickname",group.value("myNickname",profileName_).toString()}});
+        relay_.send(key,QJsonObject{{"type","group_member_profile"},{"groupId",group.value("groupId").toString()},{"name",profileName_},{"avatar",profileAvatar_},{"nickname",group.value("myNickname",profileName_).toString()},{"uid",uid_}});
     }
 }
 bool MessengerController::ownsGroup() const {
@@ -1703,6 +1758,57 @@ bool MessengerController::ownsGroup() const {
     return activeIsGroup() && !owner.isEmpty() && owner==relay_.identityId();
 }
 bool MessengerController::canManageGroup() const {return ownsGroup() || (activeIsGroup() && activeEntry().value("admins").toStringList().contains(relay_.identityId()));}
+bool MessengerController::inviteGroupMembers(const QStringList& codes){
+    if(!activeIsGroup() || activeEntry().value("transport")!="relay" || codes.isEmpty()){setError(tr("请选择要邀请的好友"));return false;}
+    for(const auto& code:codes){bool friendReady=false;for(const auto& value:contacts_){const auto peer=value.toMap();friendReady|=!peer.value("group").toBool() && peer.value("ready").toBool() && peer.value("relayPublic")==code;}if(!friendReady){setError(tr("只能邀请已经添加的好友"));return false;}}
+    const auto group=activeEntry();if(ownsGroup())return changeGroupMembers(group.value("groupId").toString(),codes,{});
+    const auto owner=group.value("ownerId",RelayClient::idForPublicKey(RelayClient::publicKeyFromCode(group.value("members").toList().value(0).toString()))).toString();
+    for(const auto& code:group.value("members").toList())if(RelayClient::idForPublicKey(RelayClient::publicKeyFromCode(code.toString()))==owner){
+        if(relay_.send(RelayClient::publicKeyFromCode(code.toString()),QJsonObject{{"type","group_invite_request"},{"groupId",group.value("groupId").toString()},{"codes",QJsonArray::fromStringList(codes)}}).isEmpty())return false;
+        emit operationCompleted(tr("邀请已排队"),tr("群主设备上线后同步成员并发送邀请，对方需要接受邀请"));return true;
+    }setError(tr("群主资料不完整，请等待群资料同步"));return false;
+}
+bool MessengerController::removeGroupMember(const QString& memberId){
+    if(!canManageGroup()){setError(tr("只有群主或管理员可以移除成员"));return false;}
+    const auto group=activeEntry();const auto owner=group.value("ownerId",RelayClient::idForPublicKey(RelayClient::publicKeyFromCode(group.value("members").toList().value(0).toString()))).toString();
+    if(memberId==owner || (!ownsGroup() && group.value("admins").toStringList().contains(memberId))){setError(tr("不能移除群主；管理员不能移除其他管理员"));return false;}
+    if(ownsGroup())return changeGroupMembers(group.value("groupId").toString(),{},memberId);
+    for(const auto& code:group.value("members").toList())if(RelayClient::idForPublicKey(RelayClient::publicKeyFromCode(code.toString()))==owner){
+        if(relay_.send(RelayClient::publicKeyFromCode(code.toString()),QJsonObject{{"type","group_remove_request"},{"groupId",group.value("groupId").toString()},{"memberId",memberId}}).isEmpty())return false;
+        emit operationCompleted(tr("移除请求已排队"),tr("群主设备上线后同步移除结果"));return true;
+    }return false;
+}
+bool MessengerController::changeGroupMembers(const QString& groupId,const QStringList& additions,const QString& removal){
+    for(auto& value:contacts_){auto group=value.toMap();if(!group.value("group").toBool() || group.value("groupId")!=groupId)continue;
+        const auto owner=group.value("ownerId",RelayClient::idForPublicKey(RelayClient::publicKeyFromCode(group.value("members").toList().value(0).toString()))).toString();if(owner!=relay_.identityId())return false;
+        const auto oldCodes=group.value("members").toList();QStringList codes;for(const auto& code:oldCodes)codes.append(code.toString());
+        if(!removal.isEmpty()){if(removal==owner)return false;bool found=false;for(qsizetype j=codes.size();j>0;--j)if(RelayClient::idForPublicKey(RelayClient::publicKeyFromCode(codes[j-1]))==removal){codes.removeAt(j-1);found=true;}if(!found)return true;}
+        for(const auto& code:additions){if(RelayClient::publicKeyFromCode(code).isEmpty())return false;if(!codes.contains(code))codes.append(code);}
+        if(codes.size()>20){setError(tr("当前群聊最多 20 人"));return false;}
+        auto admins=group.value("admins").toStringList();admins.removeAll(removal);group.insert("admins",admins);group.insert("members",codes);group.insert("ownerId",owner);
+        const auto revision=group.value("membersRevision").toLongLong()+1;group.insert("membersRevision",revision);
+        const auto previous=value;value=group;if(!saveProfile()){value=previous;setError(tr("成员变更无法保存"));return false;}
+        const auto invite=QJsonObject{{"type","group_invite"},{"groupId",groupId},{"name",group.value("name").toString()},{"avatar",group.value("avatar").toString()},{"members",QJsonArray::fromStringList(codes)},{"ownerId",owner},{"membersRevision",revision},{"admins",QJsonArray::fromStringList(admins)},{"adminsRevision",group.value("adminsRevision").toLongLong()},{"announcement",group.value("announcement").toString()},{"announcementRevision",group.value("announcementRevision").toLongLong()}};
+        bool queued=true;for(const auto& code:codes)if(RelayClient::idForPublicKey(RelayClient::publicKeyFromCode(code))!=owner)queued&=!relay_.send(RelayClient::publicKeyFromCode(code),invite).isEmpty();
+        auto recipients=group;QStringList all=codes;for(const auto& code:oldCodes)if(!all.contains(code.toString()))all.append(code.toString());recipients.insert("members",all);
+        broadcastGroupEvent(recipients,QJsonObject{{"type","group_members"},{"members",QJsonArray::fromStringList(codes)},{"ownerId",owner},{"revision",revision},{"admins",QJsonArray::fromStringList(admins)},{"adminsRevision",group.value("adminsRevision").toLongLong()}});
+        emit contactsChanged();emit activeContactChanged();if(!queued){setError(tr("成员已保存，但部分邀请未能排队，请重试"));return false;}emit operationCompleted(tr("成员变更已保存"),tr("正在同步到群成员设备"));return true;
+    }return false;
+}
+QVariantList MessengerController::searchHistory(const QString& query,bool allChats) const{
+    const auto needle=query.trimmed();QVariantList matches;if(needle.isEmpty() || needle.size()>256)return matches;
+    for(const auto& value:contacts_){const auto peer=value.toMap();const auto id=peer.value("id").toString();if(!allChats && id!=activeContactId_)continue;
+        const auto history=id==activeContactId_?messages_:vault_.loadConversation(id);
+        for(qsizetype i=history.size();i>0;--i){auto message=history[i-1].toMap();if(message.value("kind")=="withdrawn")continue;
+            if(!message.value("body").toString().contains(needle,Qt::CaseInsensitive) && !message.value("name").toString().contains(needle,Qt::CaseInsensitive))continue;
+            matches.append(QVariantMap{{"contactId",id},{"contactName",peer.value("name")},{"index",i-1},{"body",message.value("body")},{"time",message.value("time")}});if(matches.size()>=200)return matches;
+        }
+    }return matches;
+}
+QVariantMap MessengerController::droppedFileDetails(const QString& url) const{
+    const QUrl parsed(url);if(!parsed.isLocalFile())return {};const QFileInfo file(parsed.toLocalFile());if(!file.isFile() || !file.isReadable())return {};
+    return {{"url",QUrl::fromLocalFile(file.absoluteFilePath()).toString()},{"name",file.fileName()},{"size",file.size()}};
+}
 QVariantList MessengerController::groupMembers() const {
     const auto group=activeEntry();QVariantList result;const auto profiles=group.value("memberProfiles").toMap();
     const auto owner=group.value("ownerId",RelayClient::idForPublicKey(RelayClient::publicKeyFromCode(group.value("members").toList().value(0).toString()))).toString();
@@ -1786,6 +1892,7 @@ bool MessengerController::addContact(const QString& name, const QString& invite)
         for(const auto& value:contacts_){const auto row=value.toMap();if(row.value("uri").toString()==peerId && !row.value("group").toBool()){setError(row.value("ready").toBool()?tr("对方已经是你的好友，无需再次验证"):tr("已发送好友申请，请等待对方确认"));return false;}}
         const auto packetId = relay_.send(peerKey, QJsonObject {
             {QStringLiteral("type"), QStringLiteral("friend_request")},
+            {QStringLiteral("uid"),uid_},
             {QStringLiteral("name"), profileName_},
             {QStringLiteral("avatar"), profileAvatar_}
         });
@@ -2259,6 +2366,7 @@ bool MessengerController::acceptFriendRequest(const QString& contactUri)
         entry.insert(QStringLiteral("uri"), contactUri);
         entry.insert(QStringLiteral("relayPublic"), peerCode);
         entry.insert("avatar", safeAvatar(peerProfile.value("avatar").toString()));
+        entry.insert("peerUid",peerProfile.value("peerUid"));entry.insert("peerName",peerProfile.value("name"));
         entry.insert(QStringLiteral("ready"), true);
         contacts_.append(entry);
         }
@@ -2267,7 +2375,7 @@ bool MessengerController::acceptFriendRequest(const QString& contactUri)
             pendingRelayRequests_ = previousRequests; pendingRelayProfiles_ = previousProfiles;
             setError(tr("好友确认无法保存，未发出确认：%1").arg(vault_.error())); return false;
         }
-        if (relay_.send(peerKey,QJsonObject {{"type","friend_accept"},{"name",profileName_},{"avatar",profileAvatar_}}).isEmpty()) {
+        if (relay_.send(peerKey,QJsonObject {{"type","friend_accept"},{"name",profileName_},{"avatar",profileAvatar_},{"uid",uid_}}).isEmpty()) {
             contacts_ = previousContacts; pendingRequests_ = previousPending;
             pendingRelayRequests_ = previousRequests; pendingRelayProfiles_ = previousProfiles;
             const bool restored = saveProfile();
@@ -2309,6 +2417,8 @@ bool MessengerController::acceptGroupRequest(const QString& conversationId)
 {
     if (!pendingGroupRequests_.contains(conversationId)) return false;
     if (pendingRelayGroups_.contains(conversationId)) {
+        const auto oldRequests = pendingGroupRequests_;
+        const auto oldLeft = leftGroups_;
         const auto invite = pendingRelayGroups_.take(conversationId).toMap();
         pendingGroupRequests_.removeAll(conversationId);
         auto name = invite.value(QStringLiteral("name")).toString().trimmed().left(64);
@@ -2321,9 +2431,18 @@ bool MessengerController::acceptGroupRequest(const QString& conversationId)
         entry.insert(QStringLiteral("groupId"), conversationId);
         entry.insert(QStringLiteral("members"), invite.value(QStringLiteral("members")).toList());
         entry.insert("ownerId",RelayClient::idForPublicKey(RelayClient::publicKeyFromCode(invite.value("members").toList().value(0).toString())));
+        entry.insert("membersRevision",invite.value("membersRevision",0));entry.insert("avatar",safeAvatar(invite.value("avatar").toString()));entry.insert("announcement",invite.value("announcement").toString().left(2000));
+        entry.insert("adminsRevision",invite.value("adminsRevision",0));entry.insert("announcementRevision",invite.value("announcementRevision",0));
+        QStringList validAdmins;for(const auto& admin:invite.value("admins").toList())for(const auto& code:entry.value("members").toList())if(RelayClient::idForPublicKey(RelayClient::publicKeyFromCode(code.toString()))==admin.toString() && !validAdmins.contains(admin.toString()))validAdmins.append(admin.toString());entry.insert("admins",validAdmins);
+        leftGroups_.removeAll(conversationId);
         entry.insert(QStringLiteral("ready"), true);
         contacts_.append(entry);
-        saveProfile(); emit pendingGroupRequestsChanged(); emit contactsChanged(); selectContact(id);
+        if(!saveProfile()){
+            contacts_.removeLast();pendingRelayGroups_.insert(conversationId,invite);
+            pendingGroupRequests_=oldRequests;leftGroups_=oldLeft;
+            setError(tr("加入群聊无法保存，请检查本机空间后重试"));return false;
+        }
+        emit pendingGroupRequestsChanged(); emit contactsChanged(); selectContact(id);
         return true;
     }
     auto title = daemon_.groupRequestTitle(accountId_, conversationId).trimmed();
@@ -2512,6 +2631,8 @@ bool MessengerController::saveProfile()
                                           {QStringLiteral("directEndpoint"), directEndpoint_},
                                           {QStringLiteral("contacts"), contacts_},
                                           {QStringLiteral("leftGroups"),leftGroups_},
+                                          {QStringLiteral("appliedFriendRepairs"),appliedFriendRepairs_},
+                                          {QStringLiteral("removedGroupRevisions"),removedGroupRevisions_},
                                           {QStringLiteral("pendingRelayRequests"), pendingRelayRequests_},
                                           {QStringLiteral("pendingRelayProfiles"), pendingRelayProfiles_},
                                           {QStringLiteral("pendingRelayGroups"), pendingRelayGroups_},
@@ -2529,7 +2650,7 @@ bool MessengerController::saveProfile()
             for(const auto* field:{"lastMessage","lastMessageTime","unread","avatar","memberProfiles","requestPacketId"})row.remove(QString::fromLatin1(field));
             portable.append(row);
         }
-        relay_.setContactBackup(QVariantMap{{"contacts",portable},{"leftGroups",leftGroups_},{"avatar",profileAvatar_}});
+        relay_.setContactBackup(QVariantMap{{"contacts",portable},{"leftGroups",leftGroups_},{"removedGroupRevisions",removedGroupRevisions_},{"appliedFriendRepairs",appliedFriendRepairs_},{"avatar",profileAvatar_}});
     }
     return saved;
 }

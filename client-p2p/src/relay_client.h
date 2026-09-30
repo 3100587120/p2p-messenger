@@ -54,6 +54,7 @@ signals:
     void peerUnavailable(const QString& identity);
     void passwordAccountRestored(const QString& uid, const QString& name);
     void contactBackupRestored(const QVariantMap& profile);
+    void friendRepairReceived(const QString& id,const QVariantMap& repair);
     void uidResolved(const QString& uid, const QString& code, const QString& name);
     void packetReceived(const QString& senderId, const QByteArray& senderPublicKey,
                         const QJsonObject& message);
@@ -100,6 +101,7 @@ private:
     void syncContactBackup();
     void finishContactRestore();
     QString directoryRegistration_;
+    QString friendRepairQuery_;
     QMap<QString, QString> directoryQueries_;
     QTimer directoryDeadline_;
     QMap<QString, Outgoing> outbox_;

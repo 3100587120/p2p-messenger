@@ -10,6 +10,26 @@ function storage() {
     transaction: action => { const p = queue.then(() => action(store)); queue = p.catch(() => {}); return p; } };
   return store;
 }
+test('operator repair is payload-bound, scoped and encrypted, preserves UID records',async()=>{
+  const store=storage(),secret=randomBytes(32),owner=key(),others=[key(),key(),key()],d=new UidDirectory(store,{'1':owner.id},secret.toString('base64'));
+  await d.register(owner.id,owner.code);for(const peer of others)await d.register(peer.id,peer.code);
+  const repairs=[owner,...others].map((peer,i)=>({uid:i===0?'1':String(10+i),code:peer.code,id:`11111111-1111-1111-1111-11111111111${i}`,from:'a'.repeat(64),envelope:'e'.repeat(100)}));
+  const now=Math.floor(Date.now()/1000),nonce='12345678-1111-1111-1111-111111111111',hash=createHash('sha256').update(JSON.stringify(repairs)).digest('hex');
+  const mac=createHmac('sha256',secret).update(`SD-ADMIN|repair_friends|${now}|${nonce}|${hash}`).digest('hex');
+  const altered=structuredClone(repairs);altered[0].uid='2';await assert.rejects(d.admin('repair_friends',now,nonce,mac,altered),/admin_denied/);
+  assert.equal((await d.admin('repair_friends',now,nonce,mac,repairs)).repaired,4);
+  assert.equal((await d.friendRepair(owner.id)).envelope,'e'.repeat(100));assert.equal(await d.friendRepair('b'.repeat(64)),null);
+  assert.equal(await d.lookup('1'),owner.code);assert.equal(await d.lookup('13'),others[2].code);
+  await assert.rejects(d.admin('repair_friends',now,nonce,mac,repairs),/admin_replay/);
+  const backupNonce='22222222-1111-1111-1111-111111111111';
+  const proof=action=>createHmac('sha256',secret).update(`SD-ADMIN|${action}|${now}|${backupNonce}`).digest('hex');
+  const backup=await d.admin('backup',now,backupNonce,proof('backup'));
+  assert.equal(backup.records['friend_repair:1'].envelope,'e'.repeat(100));
+  const resetNonce='33333333-1111-1111-1111-111111111111';
+  const resetMac=createHmac('sha256',secret).update(`SD-ADMIN|reset|${now}|${resetNonce}`).digest('hex');
+  await d.admin('reset',now,resetNonce,resetMac);
+  assert.equal(await store.get('friend_repair:1'),undefined);
+});
 test('sequential UID starts at 11, reserved 1-10 cannot be self-selected', async () => {
   const store = storage(), owner = key(), a = key(), b = key();
   const d = new UidDirectory(store, { '1': owner.id });

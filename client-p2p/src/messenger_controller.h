@@ -66,7 +66,7 @@ public:
     QVariantList messages() const;
     QString activeContactId() const;
     QString activeContactName() const;
-    QVariantMap activeContactDetails() const {return activeEntry();}
+    QVariantMap activeContactDetails() const;
     bool activeIsGroup() const {const auto row=activeEntry();return row.value("group").toBool() && (!row.value("groupId").toString().isEmpty() || !row.value("conversationId").toString().isEmpty());}
     bool playingVoice() const {return voice_.playing();}
     QString playingVoiceData() const {return playingVoice()?playingVoiceData_:QString();}
@@ -95,6 +95,10 @@ public:
     Q_INVOKABLE QVariantList groupMembers() const;
     Q_INVOKABLE bool canManageGroup() const;
     Q_INVOKABLE bool ownsGroup() const;
+    Q_INVOKABLE bool inviteGroupMembers(const QStringList& codes);
+    Q_INVOKABLE bool removeGroupMember(const QString& memberId);
+    Q_INVOKABLE QVariantList searchHistory(const QString& query, bool allChats = false) const;
+    Q_INVOKABLE QVariantMap droppedFileDetails(const QString& url) const;
     Q_INVOKABLE bool renameGroup(const QString& name);
     Q_INVOKABLE void chooseGroupAvatar();
     Q_INVOKABLE bool setGroupAvatar(const QString& path);
@@ -245,6 +249,8 @@ private:
     QVariantMap pendingRelayGroups_;
     QVariantMap incomingRelayFiles_;
     QStringList leftGroups_;
+    QStringList appliedFriendRepairs_;
+    QVariantMap removedGroupRevisions_;
     DaemonBridge daemon_;
     GatewayMapper gatewayMapper_;
     LocalVault vault_;
@@ -275,6 +281,7 @@ private:
     void broadcastGroupProfile();
     void broadcastGroupMemberProfile(const QVariantMap& group);
     void broadcastGroupEvent(const QVariantMap& group, QJsonObject event);
+    bool changeGroupMembers(const QString& groupId,const QStringList& additions,const QString& removal);
     QHash<QString, QString> androidDownloadDestinations_;
     QHash<QString, QString> androidDownloadPaths_;
 

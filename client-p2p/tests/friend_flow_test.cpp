@@ -14,6 +14,8 @@
 #include <QQmlContext>
 #include <QQuickItem>
 #include <QQuickWindow>
+#include <QDropEvent>
+#include <QMimeData>
 #include <iostream>
 #include <QImage>
 #include <QBuffer>
@@ -617,18 +619,52 @@ static int streamFileRegression(const QString& root){
     if(!files.cancelIncoming(sender,contact,id) || !files.receive(sender,contact,frame(0)) || ready!=1)return 24;
     std::cout<<"STREAM_FILE_OVER_2MB_OUT_OF_ORDER_DUPLICATE_ENCRYPTED_CHUNKS_ASYNC_EXPORT_CANCEL=PASS"<<std::endl;return 0;
 }
+static int groupManagementRegression(const QString& root){
+    const auto aRoot=QDir(root).filePath("a"),bRoot=QDir(root).filePath("b"),cRoot=QDir(root).filePath("c"),dRoot=QDir(root).filePath("d");
+    LocalVault av(aRoot),bv(bRoot),cv(cRoot),dv(dRoot);RelayCrypto a,b,c,d;if(!a.loadOrCreate(av)||!b.loadOrCreate(bv)||!c.loadOrCreate(cv)||!d.loadOrCreate(dv))return 23;
+    const auto friendship=[](const QString& id,const RelayCrypto& peer){return QVariantMap{{"id",id},{"name",id},{"transport","relay"},{"ready",true},{"uri",peer.identityId()},{"relayPublic",peer.inviteCode()}};};
+    const QVariantMap group{{"id","g"},{"name","Regression group"},{"group",true},{"groupId","regression-group"},{"ownerId",a.identityId()},{"members",QStringList{a.inviteCode(),b.inviteCode()}},{"transport","relay"},{"ready",true}};
+    const auto init=[&](LocalVault& vault,const QString& uid,const QVariantList& contacts){return vault.saveConversation("__profile",{QVariantMap{{"uid",uid},{"profileName","Fixture"},{"contacts",contacts},{"network",QVariantMap{{"assistedConnection",true},{"relayEndpoint","ws://localhost:1"}}}}});};
+    if(!init(av,"1",{group,friendship("bob",b),friendship("charlie",c),friendship("david",d)}) || !init(bv,"11",{group}) || !init(cv,"12",{friendship("david",d)}) || !init(dv,"13",{}))return 23;
+    qputenv("P2P_MESSENGER_DATA_ROOT",aRoot.toUtf8());MessengerController alice;qputenv("P2P_MESSENGER_DATA_ROOT",bRoot.toUtf8());MessengerController bob;qputenv("P2P_MESSENGER_DATA_ROOT",cRoot.toUtf8());MessengerController charlie;qputenv("P2P_MESSENGER_DATA_ROOT",dRoot.toUtf8());MessengerController david;
+    auto* ar=alice.findChild<RelayClient*>();auto* br=bob.findChild<RelayClient*>();auto* cr=charlie.findChild<RelayClient*>();if(!ar || !br || !cr)return 23;QSet<QString> delivered;
+    const auto deliver=[&](LocalVault& source,const RelayCrypto& sender,const RelayCrypto& receiver,MessengerController& target){
+        for(const auto& value:source.loadConversation("__relay_outbox")){const auto row=value.toMap();if(row.value("to")!=receiver.identityId() || delivered.contains(row.value("id").toString()))continue;
+            bool ok=false;const auto msg=receiver.open(sender.identityId(),row.value("id").toString(),row.value("envelope").toByteArray(),&ok);if(!ok)return false;
+            delivered.insert(row.value("id").toString());target.findChild<RelayClient*>()->packetReceived(sender.identityId(),RelayClient::publicKeyFromCode(sender.inviteCode()),msg);
+        }return true;
+    };
+    alice.selectContact("g");bob.selectContact("g");if(alice.activeContactDetails().value("groupNumber").toString().size()!=16 || !alice.inviteGroupMembers({c.inviteCode()}) || !deliver(av,a,c,charlie) || charlie.pendingGroupRequests().size()!=1 || !charlie.acceptGroupRequest("regression-group"))return 23;
+    const auto cGroup=charlie.activeContactId();if(charlie.canManageGroup() || charlie.removeGroupMember(a.identityId()) || !charlie.inviteGroupMembers({d.inviteCode()}) || !deliver(cv,c,a,alice) || !deliver(av,a,b,bob) || !deliver(av,a,c,charlie) || !deliver(av,a,d,david) || !david.acceptGroupRequest("regression-group"))return 23;
+    if(alice.groupMembers().size()!=4 || bob.groupMembers().size()!=4 || charlie.groupMembers().size()!=4)return 23;
+    br->packetReceived(d.identityId(),RelayClient::publicKeyFromCode(d.inviteCode()),QJsonObject{{"type","group_members"},{"groupId","regression-group"},{"ownerId",a.identityId()},{"revision",999},{"members",QJsonArray{a.inviteCode(),d.inviteCode()}}});if(bob.groupMembers().size()!=4)return 23;
+    if(!alice.setGroupAdministrator(b.identityId(),true) || !alice.setGroupAdministrator(d.identityId(),true) || !deliver(av,a,b,bob) || !bob.canManageGroup() || bob.removeGroupMember(d.identityId()) || bob.removeGroupMember(a.identityId()))return 23;
+    if(!bob.removeGroupMember(c.identityId()) || !deliver(bv,b,a,alice) || !deliver(av,a,c,charlie))return 23;
+    for(const auto& value:charlie.contacts())if(value.toMap().value("id")==cGroup)return 23;
+    cr->packetReceived(a.identityId(),RelayClient::publicKeyFromCode(a.inviteCode()),QJsonObject{{"type","group_invite"},{"groupId","regression-group"},{"name","Replay"},{"membersRevision",1},{"members",QJsonArray{a.inviteCode(),b.inviteCode(),c.inviteCode()}}});if(!charlie.pendingGroupRequests().isEmpty())return 23;
+    if(!alice.sendMessage("search UNIQUE history") || alice.searchHistory("unique").size()!=1 || alice.searchHistory("nothing-found",true).size()!=0)return 23;
+    const auto path=QDir(root).filePath("drop file.txt");QFile file(path);if(!file.open(QIODevice::WriteOnly))return 23;file.write("file");file.close();
+    if(alice.droppedFileDetails(QUrl::fromLocalFile(path).toString()).value("name")!="drop file.txt" || !alice.droppedFileDetails("https://example.com/file").isEmpty() || !alice.droppedFileDetails(QUrl::fromLocalFile(root).toString()).isEmpty())return 23;
+    const auto repairId=QUuid::createUuid().toString(QUuid::WithoutBraces);QVariantList peers;for(const auto& pair:QList<QPair<QString,QString>>{{"11",b.inviteCode()},{"12",c.inviteCode()},{"13",d.inviteCode()}})peers.append(QVariantMap{{"uid",pair.first},{"code",pair.second},{"name","Repaired"}});
+    ar->friendRepairReceived(repairId,QVariantMap{{"uid","1"},{"peers",peers}});const auto count=alice.contacts().size();ar->friendRepairReceived(repairId,QVariantMap{{"uid","1"},{"peers",peers}});if(alice.contacts().size()!=count || av.loadConversation("g").isEmpty())return 23;
+    for(const auto& uid:QStringList{"11","12","13"}){bool found=false;for(const auto& value:alice.contacts()){const auto row=value.toMap();found|=row.value("peerUid").toString()==uid && row.value("ready").toBool();}if(!found)return 23;}
+    std::cout<<"GROUP_INVITE_MEMBER_REQUEST_KICK_ADMIN_SECURITY_STALE_REPLAY_SEARCH_DROP_UID_REPAIR=PASS"<<std::endl;return 0;
+}
 int main(int argc, char** argv)
 {
     for(int i=1;i<argc;++i)if(QString::fromLocal8Bit(argv[i])=="--public-headless-media-e2e") {
         QCoreApplication app(argc,argv);QTemporaryDir root(QDir::tempPath()+"/headless-media-XXXXXX");
         return root.isValid()?publicHeadlessMediaRegression(app,root.path()):18;
     }
-    qputenv("QT_QPA_PLATFORM", "offscreen");
+    // Offscreen by default for CI; allow the native product backend to be
+    // selected for font/layout/drop/window validation on Windows.
+    if(qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM"))qputenv("QT_QPA_PLATFORM", "offscreen");
     QGuiApplication app(argc, argv);
     QTemporaryDir root(QDir::tempPath() + "/friend-flow-XXXXXX");
     if (!root.isValid()) return 2;
     qputenv("P2P_MESSENGER_DATA_ROOT", root.path().toUtf8());
     if(app.arguments().contains("--stream-file-regression"))return streamFileRegression(root.path());
+    if(app.arguments().contains("--group-management-regression"))return groupManagementRegression(root.path());
     if(app.arguments().contains("--call-protocol-regression"))return CallProtocolRegression::run(root.path());
     if(app.arguments().contains("--screenshot-region-regression")) {
         QImage desktop(100,80,QImage::Format_RGB32);desktop.fill(Qt::blue);
@@ -713,6 +749,37 @@ int main(int argc, char** argv)
         qputenv("P2P_MESSENGER_DATA_ROOT",root.path().toUtf8());
         if(warnings || engine.rootObjects().first()!=window)return 9;
         std::cout<<"UID_LOGIN_FIELDS_VISIBLE_CANCEL_RETRY_PROFILE_SWAP_RETAINS_NATIVE_WINDOW=PASS"<<std::endl;
+        QMetaObject::invokeMethod(loginDialog,"close");
+        controller.selectContact("preview-friend");window->setProperty("showThread",true);
+        auto* callControls=window->findChild<QObject*>("voiceCallControls");
+        auto* voiceWindow=window->findChild<QWindow*>("voiceCallWindow");
+        auto* historyDialog=window->findChild<QObject*>("historySearchDialog");
+        auto* dropDialog=window->findChild<QObject*>("droppedFilesDialog");
+        auto* quickWindow=qobject_cast<QQuickWindow*>(window);
+        if(!callControls || !voiceWindow || !historyDialog || !dropDialog || !quickWindow)return 9;
+        const auto settle=[&]{QEventLoop loop;QTimer::singleShot(100,&loop,&QEventLoop::quit);loop.exec();};
+        quickWindow->show();
+        if(!QMetaObject::invokeMethod(callControls,"open"))return 9;
+        settle();
+        if(!voiceWindow->isVisible() || !quickWindow->isVisible() || voiceWindow==quickWindow){std::cerr<<"Separate call window visibility failed"<<std::endl;return 9;}
+        QMetaObject::invokeMethod(callControls,"close");
+        QMetaObject::invokeMethod(historyDialog,"open");
+        settle();
+        const auto* historyField=window->findChild<QQuickItem*>("historySearchInput");
+        if(voiceWindow->isVisible() || !historyDialog->property("visible").toBool() || !historyField || historyField->width()<80)return 9;
+        QMetaObject::invokeMethod(historyDialog,"close");
+        settle();
+        const auto dropFile=QDir(root.path()).filePath("staged.txt");QFile staged(dropFile);if(!staged.open(QIODevice::WriteOnly))return 9;staged.write("not sent without confirmation");staged.close();
+        QMimeData mime;mime.setUrls({QUrl::fromLocalFile(dropFile)});
+        QDragEnterEvent enter(QPoint(190,350),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);
+        QCoreApplication::sendEvent(quickWindow,&enter);
+        QDropEvent drop(QPointF(190,350),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);
+        QCoreApplication::sendEvent(quickWindow,&drop);
+        settle();
+        if(!enter.isAccepted() || !drop.isAccepted() || !dropDialog->property("visible").toBool() || !controller.messages().isEmpty()){std::cerr<<"File drop staging failed: enter="<<enter.isAccepted()<<" drop="<<drop.isAccepted()<<" visible="<<dropDialog->property("visible").toBool()<<" messages="<<controller.messages().size()<<std::endl;return 9;}
+        QMetaObject::invokeMethod(dropDialog,"close");
+        if(warnings)return 9;
+        std::cout<<"SEPARATE_CALL_WINDOW_HISTORY_DIALOG_NATIVE_FILE_DROP_STAGES_WITHOUT_SENDING=PASS"<<std::endl;
         const auto screenshotIndex=app.arguments().indexOf("--screenshot-dir");
         if(screenshotIndex>=0) {
             const auto directory=app.arguments().value(screenshotIndex+1); QDir().mkpath(directory);

@@ -10,6 +10,14 @@
 #include <QScopedValueRollback>
 #include <QQuickWindow>
 #include <QSGRendererInterface>
+#include <QFontDatabase>
+#include <QIcon>
+#include <QRawFont>
+#include <QPainter>
+#include <QLocalServer>
+#include <QLocalSocket>
+#include <QLockFile>
+#include <QCryptographicHash>
 #ifdef Q_OS_ANDROID
 #include <QJniObject>
 #include <QtCore/qnativeinterface.h>
@@ -26,6 +34,7 @@
 #include "screenshot_service.h"
 #include <cstring>
 #include <memory>
+#include <vector>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <iostream>
@@ -47,6 +56,9 @@ int main(int argc, char* argv[])
 {
     traceStartup("entry");
 #ifdef Q_OS_WIN
+    // Qt 6.7's native Windows font engines cannot render the bundled CBDT
+    // color emoji reliably. Use its FreeType backend unless explicitly overridden.
+    if(qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM"))qputenv("QT_QPA_PLATFORM","windows:fontengine=freetype");
     for(int i=1;i<argc;++i)if(std::strcmp(argv[i],"--connection-config-report")==0) {
         QCoreApplication app(argc,argv);
         QCoreApplication::setApplicationName(QStringLiteral("P2P Messenger"));
@@ -114,8 +126,32 @@ int main(int argc, char* argv[])
     QGuiApplication::setApplicationName(QStringLiteral("P2P Messenger"));
     QGuiApplication::setApplicationDisplayName(QStringLiteral("双点聊"));
     QGuiApplication::setOrganizationName(QStringLiteral("P2P Messenger"));
+    QGuiApplication::setWindowIcon(QIcon(QStringLiteral(":/windows/icon.ico")));
+    const auto emojiId=QFontDatabase::addApplicationFont(QStringLiteral(":/assets/fonts/NotoColorEmoji_WindowsCompatible.ttf"));
+    const auto emojiFamilies=QFontDatabase::applicationFontFamilies(emojiId);
+    if(!emojiFamilies.isEmpty()){
+        auto font=application.font();auto families=font.families();families.append(emojiFamilies);font.setFamilies(families);application.setFont(font);
+    }
 #ifdef Q_OS_WIN
     // Administrative provisioning only. File contents and keys never go to logs.
+    if(application.arguments().contains("--verify-ui-assets")){
+        if(emojiFamilies.isEmpty() || QGuiApplication::windowIcon().isNull()){std::cerr<<"UI_ASSET_LOAD_FAILED font="<<!emojiFamilies.isEmpty()<<" icon="<<!QGuiApplication::windowIcon().isNull()<<std::endl;return 7;}QFont font(emojiFamilies.first());font.setPixelSize(64);const auto raw=QRawFont::fromFont(font);
+        for(uint ch:{0x1f600U,0x1f602U,0x1f970U,0x1f44dU,0x2764U,0x1f389U,0x1f60eU,0x1f64fU})if(!raw.supportsCharacter(ch)){std::cerr<<"UI_EMOJI_GLYPH_MISSING="<<ch<<" platform="<<application.platformName().toStdString()<<" registered="<<emojiFamilies.first().toStdString()<<" selected="<<raw.familyName().toStdString()<<" valid="<<raw.isValid()<<std::endl;return 7;}
+        QImage image(96,96,QImage::Format_ARGB32);image.fill(Qt::transparent);QPainter painter(&image);painter.setFont(font);painter.drawText(image.rect(),Qt::AlignCenter,QString::fromUtf8("😀"));painter.end();int colored=0;for(int y=0;y<96;++y)for(int x=0;x<96;++x){const auto pixel=image.pixelColor(x,y);colored+=pixel.alpha()>0 && qMax(pixel.red(),qMax(pixel.green(),pixel.blue()))-qMin(pixel.red(),qMin(pixel.green(),pixel.blue()))>40;}
+        if(colored<100){std::cerr<<"UI_EMOJI_COLOR_PIXELS="<<colored<<std::endl;return 7;}const auto index=application.arguments().indexOf("--preview");if(index>=0 && !image.save(application.arguments().value(index+1)))return 7;
+        std::cout<<"OFFLINE_EMOJI_GLYPHS_COLOR_PIXELS_AND_WINDOW_ICON=PASS"<<std::endl;return 0;
+    }
+    if(application.arguments().contains("--repair-owned-profiles")){
+        qputenv("P2P_MESSENGER_DISABLE_DIRECT_ENGINE","1");AccountManager accounts;std::vector<std::unique_ptr<MessengerController>> sessions;
+        for(const auto& value:accounts.profiles()){const auto id=value.toMap().value("id").toString();const auto root=id=="default"?accounts.baseRoot():QDir(accounts.baseRoot()).filePath("accounts/"+id);
+            if(!QFileInfo::exists(QDir(root).filePath("vault/master-key.protected")))continue;LocalVault vault(root);const auto rows=vault.loadConversation("__profile");if(rows.isEmpty() || !vault.hasConversation("__relay_identity"))continue;
+            const auto uid=rows.first().toMap().value("uid").toString();if(!QStringList{"1","11","12","13"}.contains(uid))continue;
+            qputenv("P2P_MESSENGER_DATA_ROOT",root.toUtf8());sessions.push_back(std::make_unique<MessengerController>());
+        }
+        if(sessions.empty()){std::cout<<"LOCAL_REPAIR_NO_MATCHING_UID_PROFILES"<<std::endl;return 5;}
+        bool done=false;QTimer poll;poll.setInterval(500);QObject::connect(&poll,&QTimer::timeout,&application,[&]{bool all=true;for(const auto& session:sessions){const auto uid=session->userCode();const QStringList expected=uid=="1"?QStringList{"11","12","13"}:QStringList{"1"};for(const auto& peerUid:expected){bool found=false;for(const auto& value:session->contacts()){const auto row=value.toMap();found|=row.value("peerUid").toString()==peerUid && row.value("ready").toBool() && !row.value("group").toBool();}all&=found;}all&=session->networkStatus().contains(QStringLiteral("自检通过"));}if(all){done=true;application.quit();}});
+        QTimer::singleShot(45000,&application,&QCoreApplication::quit);poll.start();application.exec();std::cout<<"LOCAL_UID_FRIEND_RELATIONS_REPAIRED="<<(done?"PASS":"FAIL")<<" profiles="<<sessions.size()<<std::endl;return done?0:5;
+    }
     if (application.arguments().contains("--public-identity")) {
         LocalVault device(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation));
         RelayCrypto identity;
@@ -154,6 +190,14 @@ int main(int argc, char* argv[])
     if (!prepareAndroidAcceptance(application, &acceptancePeer)) return 2;
 #endif
     QString accountResetError;
+#ifdef Q_OS_WIN
+    const auto desktopRoot=qEnvironmentVariable("P2P_MESSENGER_DATA_ROOT").isEmpty()?QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation):qEnvironmentVariable("P2P_MESSENGER_DATA_ROOT");
+    QDir().mkpath(desktopRoot);QLockFile desktopLock(QDir(desktopRoot).filePath("desktop-session.lock"));desktopLock.setStaleLockTime(0);
+    const auto ipcName="ShuangDianLiao-"+QString::fromLatin1(QCryptographicHash::hash(desktopRoot.toUtf8(),QCryptographicHash::Sha256).toHex().first(24));
+    if(!desktopLock.tryLock(0)){QLocalSocket peer;peer.connectToServer(ipcName);if(peer.waitForConnected(1500)){peer.write("show");peer.waitForBytesWritten(500);}return 0;}
+    QLocalServer desktopServer;QLocalServer::removeServer(ipcName);desktopServer.listen(ipcName);
+    QObject::connect(&desktopServer,&QLocalServer::newConnection,&application,[&]{while(auto* peer=desktopServer.nextPendingConnection()){peer->disconnectFromServer();peer->deleteLater();for(auto* window:QGuiApplication::topLevelWindows())if(window->objectName()=="messengerMainWindow"){window->showNormal();window->raise();window->requestActivate();break;}}});
+#endif
     if (!AccountManager::resetForPasswordRelease(&accountResetError)) { std::cerr << accountResetError.toStdString() << std::endl; return 4; }
     AccountManager accounts;
 #ifdef Q_OS_ANDROID
@@ -178,6 +222,7 @@ int main(int argc, char* argv[])
     QObject::connect(&screenCapture,&ScreenshotService::error,&engine,[&](const QString& reason){restoreScreenshotWindow();messenger->screenshotFailed(reason);});
     engine.rootContext()->setContextProperty(QStringLiteral("messenger"), messenger.get());
     engine.rootContext()->setContextProperty(QStringLiteral("accountManager"), &accounts);
+    engine.rootContext()->setContextProperty(QStringLiteral("emojiFontFamily"),emojiFamilies.value(0));
     bool rebuildingProfile = false;
     const auto bindProfile = [&] {
         QObject::connect(messenger.get(),&MessengerController::screenshotSelectionRequested,&screenCapture,&ScreenshotService::start);
@@ -202,6 +247,10 @@ int main(int argc, char* argv[])
 #endif
     };
     bindProfile();
+#ifdef Q_OS_WIN
+    application.setQuitOnLastWindowClosed(false);
+    if(!messenger->userCode().isEmpty())notifications.accountReady();
+#endif
     const auto reloadProfile = [&](const QString& root) {
         QTimer::singleShot(0, &engine, [&, root] {
 #ifdef Q_OS_ANDROID
@@ -244,6 +293,9 @@ int main(int argc, char* argv[])
     if(!messenger->userCode().isEmpty())notifications.accountReady();
 #endif
     engine.loadFromModule("P2PMessenger", "Main");
+#ifdef Q_OS_WIN
+    if(application.arguments().contains("--background"))for(auto* object:engine.rootObjects())if(auto* window=qobject_cast<QWindow*>(object))window->hide();
+#endif
 #ifdef Q_OS_ANDROID
     for(auto* object:engine.rootObjects())if(auto* window=qobject_cast<QQuickWindow*>(object)){
         // Release GPU state while hidden so resuming recreates render resources
@@ -267,6 +319,6 @@ int main(int argc, char* argv[])
     bool validTimeout = false;
     const auto exitAfterMs = qEnvironmentVariableIntValue("P2P_MESSENGER_EXIT_AFTER_MS", &validTimeout);
     if (validTimeout && exitAfterMs > 0)
-        QTimer::singleShot(exitAfterMs, &application, &QGuiApplication::quit);
+        QTimer::singleShot(exitAfterMs, &application, [&]{for(auto* window:QGuiApplication::topLevelWindows())window->setProperty("quitting",true);application.quit();});
     return application.exec();
 }

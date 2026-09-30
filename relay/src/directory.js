@@ -74,23 +74,31 @@ export class UidDirectory {
       const {tokenHash,...safe}=record; return {uid,...safe};
     });
   }
-  async admin(action, timestamp, nonce, mac) {
-    if (!['backup','reset'].includes(action) || !this.ownerSecret || !Number.isSafeInteger(timestamp) || Math.abs(Date.now()/1000-timestamp)>60 || !/^[0-9a-f-]{36}$/.test(nonce || '') || !/^[0-9a-f]{64}$/.test(mac || '')) throw new Error('admin_denied');
+  async admin(action, timestamp, nonce, mac, repairs = null) {
+    if (!['backup','reset','repair_friends'].includes(action) || !this.ownerSecret || !Number.isSafeInteger(timestamp) || Math.abs(Date.now()/1000-timestamp)>60 || !/^[0-9a-f-]{36}$/.test(nonce || '') || !/^[0-9a-f]{64}$/.test(mac || '')) throw new Error('admin_denied');
     const secret=Uint8Array.from(atob(this.ownerSecret),c=>c.charCodeAt(0));
     const key=await crypto.subtle.importKey('raw',secret,{name:'HMAC',hash:'SHA-256'},false,['verify']);
-    if (!await crypto.subtle.verify('HMAC',key,Uint8Array.from(mac.match(/../g),s=>parseInt(s,16)),new TextEncoder().encode(`SD-ADMIN|${action}|${timestamp}|${nonce}`))) throw new Error('admin_denied');
+    const encoded=JSON.stringify(repairs);if(action==='repair_friends' && encoded.length>16000)throw new Error('admin_denied');
+    const suffix=action==='repair_friends'?'|'+[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(encoded)))].map(v=>v.toString(16).padStart(2,'0')).join(''):'';
+    if (!await crypto.subtle.verify('HMAC',key,Uint8Array.from(mac.match(/../g),s=>parseInt(s,16)),new TextEncoder().encode(`SD-ADMIN|${action}|${timestamp}|${nonce}${suffix}`))) throw new Error('admin_denied');
     return this.storage.transaction(async tx => {
       if (await tx.get('admin_used:'+nonce)) throw new Error('admin_replay');
       const rows=await tx.list();
       if (rows.size>=1000) throw new Error('manual_backup_required');
-      const accounts=[...rows].filter(([key])=>/^(identity:|uid:|auth:|rate:|counter$|generation$)/.test(key));
+      const accounts=[...rows].filter(([key])=>/^(identity:|uid:|auth:|rate:|friend_repair:|counter$|generation$)/.test(key));
       await tx.put('admin_used:'+nonce,timestamp);
+      if(action==='repair_friends'){
+        if(!Array.isArray(repairs) || repairs.length!==4 || new Set(repairs.map(r=>r.uid)).size!==4)throw new Error('invalid_repairs');
+        for(const r of repairs){if(!['1','11','12','13'].includes(r.uid) || r.code!==await tx.get('uid:'+r.uid) || !/^[0-9a-f-]{36}$/.test(r.id||'') || !/^[0-9a-f]{64}$/.test(r.from||'') || typeof r.envelope!=='string' || r.envelope.length<80 || r.envelope.length>8000)throw new Error('invalid_repairs');}
+        for(const r of repairs)await tx.put('friend_repair:'+r.uid,{id:r.id,from:r.from,envelope:r.envelope});return {accounts:accounts.filter(([k])=>k.startsWith('uid:')).length,repaired:4};
+      }
       if (action==='backup') return {records:Object.fromEntries(accounts),accounts:accounts.filter(([key])=>key.startsWith('uid:')).length};
       for (const [key] of accounts) await tx.delete(key);
       await tx.put('generation',nonce);
       return {accounts:0,generation:nonce};
     });
   }
+  async friendRepair(identity) {const uid=await this.storage.get('identity:'+identity);return uid?await this.storage.get('friend_repair:'+uid)??null:null;}
   async contacts(uid, token, snapshot = undefined) {
     if (!/^[1-9][0-9]{0,15}$/.test(uid) || !/^[A-Za-z0-9_-]{43}$/.test(token || '')) throw new Error('invalid_login');
     if (snapshot !== undefined && (!snapshot || !/^[0-9a-f-]{36}$/.test(snapshot.id || '') || typeof snapshot.envelope !== 'string' || snapshot.envelope.length > 56000 || snapshot.envelope.length < 80)) throw new Error('invalid_backup');

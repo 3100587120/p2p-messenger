@@ -3,9 +3,11 @@ import QtQuick.Controls
 import QtQuick.Controls.Material
 import QtQuick.Layouts
 import QtQuick.Dialogs
+import QtQuick.Window
 
 ApplicationWindow {
     id: window
+    objectName: "messengerMainWindow"
     width: Qt.platform.os === "android" ? 390 : 1100
     height: Qt.platform.os === "android" ? 780 : 740
     minimumWidth: 320; minimumHeight: 480
@@ -21,6 +23,7 @@ ApplicationWindow {
     property color accent: "#1685ef"
     property color subdued: "#758398"
     property string accountError: ""
+    property bool quitting:false
     function syncReadState(){messenger.setThreadVisible((!window.mobile || window.showThread) && window.active && !account.visible && !login.visible)}
     onActiveChanged:Qt.callLater(syncReadState)
     onShowThreadChanged:syncReadState()
@@ -30,7 +33,7 @@ ApplicationWindow {
     function openMessageSender(index) {peerDetails.messageIndex=index;peerDetails.open()}
     function resetSession() {screenshotDelay.stop();screenshotSheet.close();account.close();login.close();loginProgress.close();requests.close();call.close();failure.close();notice.close();peerDetails.close();forwardPicker.close();removeContactDialog.close();photoPreview.close();nickname.close();emojis.close();addFriend.close();group.close();messageMenu.close();accountName.text=messenger.profileName;accountPassword.text="";accountPasswordConfirm.text="";loginPassword.text="";loginUid.text=messenger.loginUid;voiceInput=false;expandedTools=false;if(!messenger.activeContactId.length)showThread=false;if(messenger.loginPending)loginProgress.open();else if(!messenger.profileName.length)account.open();if(messenger.callState!=="idle")call.open();syncReadState()}
     function navigateBack() {if(showThread){showThread=false;expandedTools=false}else if(typeof notificationService!=="undefined")notificationService.moveToBackground()}
-    onClosing:function(close){if(Qt.platform.os==="android"){close.accepted=false;navigateBack()}}
+    onClosing:function(close){if(quitting)return;if(Qt.platform.os==="android"){close.accepted=false;navigateBack()}else if(Qt.platform.os==="windows" && typeof notificationService!=="undefined"){close.accepted=false;window.hide()}}
     Shortcut {sequence:Qt.Key_Back;enabled:Qt.platform.os==="android";onActivated:window.navigateBack()}
     Popup {
         id: notice; x: (window.width - width) / 2; y: 12; width: Math.min(380,window.width - 24); padding: 14
@@ -52,7 +55,7 @@ ApplicationWindow {
         contentItem: Item {
             Row { id: iconRow; anchors.centerIn: parent; spacing: actionButton.iconName.length ? 6 : 0
                 FeatureIcon { glyph: actionButton.iconName; tint: actionButton.enabled ? window.accent : "#9ca9bb"; visible: glyph.length > 0; width: 19; height: 19; anchors.verticalCenter: parent.verticalCenter }
-                Text { text: actionButton.text;renderType:Text.NativeRendering; color: actionButton.enabled ? window.accent : "#9ca9bb"; font.pixelSize: 14; anchors.verticalCenter: parent.verticalCenter }
+                Text { text: actionButton.text;renderType:Text.QtRendering; font.family:/[\uD800-\uDBFF\u2764]/.test(text) && typeof emojiFontFamily!=="undefined" && emojiFontFamily.length?emojiFontFamily:window.font.family;color: actionButton.enabled ? window.accent : "#9ca9bb"; font.pixelSize: /[\uD800-\uDBFF\u2764]/.test(text)?23:14; anchors.verticalCenter: parent.verticalCenter }
             }
         }
     }
@@ -75,6 +78,8 @@ ApplicationWindow {
         function onLastErrorChanged() { if (messenger.lastError.length) { window.accountError = ""; failure.open() } }
         function onPendingRequestsChanged() { if (messenger.pendingRequests.length) requests.open() }
         function onVoiceChanged() { call.elapsedSeconds=messenger.callDuration;if (messenger.callState !== "idle") call.open(); else call.close() }
+        function onActiveContactChanged(){if(droppedFiles.contactId!==messenger.activeContactId){droppedFiles.files=[];droppedFiles.close()}if(!messenger.activeContactId.length)window.showThread=false}
+        function onMessagesChanged(){if(historySearch.visible)searchDelay.restart()}
         function onScreenshotChanged(){if(messenger.screenshotPreview.length){window.finishScreenshotSelection();screenshotSheet.open()}}
         function onAvatarPickerRequested() { avatarPicker.groupPicture=false;avatarPicker.open() }
         function onGroupAvatarPickerRequested() {avatarPicker.groupPicture=true;avatarPicker.open()}
@@ -154,6 +159,8 @@ ApplicationWindow {
             Switch { text: "辅助连接（推荐）"; checked: messenger.assistedConnection; Layout.fillWidth: true; onClicked: messenger.setAssistedConnection(checked) }
             Action { iconName: "requests"; text: "开启系统消息提醒"; Layout.fillWidth: true; onClicked: messenger.enableMessageReminders() }
             Switch { visible: Qt.platform.os === "android"; text: "后台收消息（常驻通知）"; checked: typeof notificationService !== "undefined" && notificationService.backgroundEnabled; Layout.fillWidth: true; onClicked: { if(typeof notificationService!=="undefined")notificationService.setBackgroundEnabled(checked) } }
+            Switch {visible:Qt.platform.os==="windows";text:"开机自动后台收消息";checked:typeof notificationService!=="undefined" && notificationService.backgroundEnabled;Layout.fillWidth:true;onClicked:notificationService.setBackgroundEnabled(checked)}
+            Label {visible:Qt.platform.os==="windows";text:"关闭窗口后继续后台接收；右键托盘图标可彻底退出。彻底退出后不再即时提醒。";wrapMode:Text.Wrap;Layout.fillWidth:true;color:window.subdued}
             Action { visible: Qt.platform.os === "android"; iconName:"settings";text:"后台运行与电池设置";Layout.fillWidth:true;onClicked:notificationService.openBackgroundSettings() }
             Label {visible:Qt.platform.os==="android" && typeof notificationService!=="undefined";text:typeof notificationService!=="undefined"?notificationService.backgroundStatus:"";wrapMode:Text.Wrap;Layout.fillWidth:true;color:window.subdued}
             Label { visible: Qt.platform.os === "android"; text: "关闭界面后由后台服务接收。请允许通知和后台运行；系统强行停止或限制后台会阻止接收。"; font.pixelSize: 12; color: window.subdued; wrapMode: Text.Wrap; Layout.fillWidth: true }
@@ -227,17 +234,28 @@ ApplicationWindow {
         TextField { id: groupNickname; placeholderText: "仅用于当前群聊"; maximumLength: 64; Layout.fillWidth: true; Layout.minimumWidth: 0 }
         Action { text: "保存"; Layout.fillWidth: true; onClicked: { if (messenger.setGroupNickname(groupNickname.text)) nickname.close() } }
     } }
-    Sheet {
-        id: call; title: "语音通话"; closePolicy: Popup.NoAutoClose;modal:false;dim:false
-        anchors.centerIn:undefined;x:Math.max(12,window.width-width-12);y:12
-        width:Math.min(330,window.width-24)
-        property int elapsedSeconds:0
-        contentItem: ColumnLayout {
-            Label { text: messenger.callPeerName; font.pixelSize: 24; Layout.fillWidth: true; elide: Text.ElideRight }
-            Label {text:messenger.callState === "ringing" ? "邀请你语音通话" : messenger.callState === "active" ? "通话中 · "+Math.floor(call.elapsedSeconds/60)+":"+(call.elapsedSeconds%60).toString().padStart(2,"0")+" · "+messenger.callParticipants+" 人" : "正在接通…"; Layout.fillWidth: true; wrapMode: Text.Wrap }
-            Timer{interval:1000;repeat:true;running:messenger.callState==="active";onTriggered:call.elapsedSeconds=messenger.callDuration}
-            Action { text: "接听"; visible: messenger.callState === "ringing"; Layout.fillWidth: true; onClicked: messenger.answerCall() }
-            Action { text: messenger.callState === "ringing" ? "拒绝" : "挂断"; Layout.fillWidth: true; onClicked: messenger.endCall() }
+    Item {id:call;objectName:"voiceCallControls";property int elapsedSeconds:0
+        function open(){if(Qt.platform.os==="windows")callWindow.show();else callPopup.open()}
+        function close(){callWindow.hide();callPopup.close()}
+        Timer{interval:1000;repeat:true;running:messenger.callState==="active";onTriggered:call.elapsedSeconds=messenger.callDuration}
+    }
+    component CallContents:ColumnLayout {
+        spacing:12
+        Label{text:messenger.callPeerName;font.pixelSize:22;font.bold:true;Layout.fillWidth:true;elide:Text.ElideRight}
+        Label{text:messenger.callState==="ringing"?"邀请你语音通话":messenger.callState==="active"?"通话中 · "+Math.floor(call.elapsedSeconds/60)+":"+(call.elapsedSeconds%60).toString().padStart(2,"0")+" · "+messenger.callParticipants+" 人":"正在接通…";Layout.fillWidth:true;wrapMode:Text.Wrap}
+        Action{text:"接听";visible:messenger.callState==="ringing";Layout.fillWidth:true;onClicked:messenger.answerCall()}
+        Action{text:messenger.callState==="ringing"?"拒绝":"挂断";Layout.fillWidth:true;onClicked:messenger.endCall()}
+    }
+    Window {id:callWindow;objectName:"voiceCallWindow";visible:false;width:330;height:240;minimumWidth:280;minimumHeight:210;title:"双点聊 · 语音通话";color:"#f3f6fb";flags:Qt.Window|Qt.WindowStaysOnTopHint;transientParent:window
+        // Closing this small window hides it; the call remains available from
+        // the chat toolbar. Do not veto application/system shutdown here.
+        onClosing:callWindow.hide()
+        CallContents{anchors.fill:parent;anchors.margins:20}
+    }
+    Popup{id:callPopup;modal:false;dim:false;closePolicy:Popup.NoAutoClose;x:Math.max(12,window.width-width-12);y:12;width:Math.min(290,window.width-24);padding:16
+        background:Rectangle{color:"white";radius:16;border.color:"#bcd9fb"}
+        contentItem:ColumnLayout{Label{text:"语音通话 · 可拖动";color:window.subdued;Layout.fillWidth:true;MouseArea{anchors.fill:parent;property point origin;onPressed:function(mouse){origin=Qt.point(mouse.x,mouse.y)}onPositionChanged:function(mouse){if(pressed){callPopup.x=Math.max(0,Math.min(window.width-callPopup.width,callPopup.x+mouse.x-origin.x));callPopup.y=Math.max(0,Math.min(window.height-callPopup.height,callPopup.y+mouse.y-origin.y))}}}}
+            CallContents{Layout.fillWidth:true}
         }
     }
     Sheet { id: emojis; title: "表情"; standardButtons: Dialog.Close; contentItem: ColumnLayout {
@@ -296,6 +314,9 @@ ApplicationWindow {
             Label{text:peerDetails.details.peerName||peerDetails.details.name||messenger.activeContactName;font.pixelSize:20;font.bold:true;Layout.fillWidth:true;wrapMode:Text.Wrap}
             Label{text:peerDetails.groupView?"群聊":peerDetails.details.ready?"已添加的好友":peerDetails.messageIndex>=0 && messenger.activeIsGroup?"群成员":"等待好友确认";color:window.subdued}
             Label{visible:!!peerDetails.details.peerUid;text:"UID "+(peerDetails.details.peerUid||"")}
+            Label{visible:peerDetails.groupView;text:"群号 "+(peerDetails.details.groupNumber||"");wrapMode:Text.Wrap;Layout.fillWidth:true}
+            Action{visible:peerDetails.groupView;text:"邀请好友入群";iconName:"friend";Layout.fillWidth:true;onClicked:inviteMembers.open()}
+            Action{visible:peerDetails.messageIndex<0;text:"查找聊天记录";iconName:"requests";Layout.fillWidth:true;onClicked:{historySearch.open();searchInput.forceActiveFocus()}}
             TextField{id:detailRemark;visible:!peerDetails.groupView && peerDetails.messageIndex<0;placeholderText:"设置好友备注（仅自己可见）";maximumLength:64;Layout.fillWidth:true;Layout.minimumWidth:0}
             Action{visible:!peerDetails.groupView && peerDetails.messageIndex<0;text:"保存备注";iconName:"account";Layout.fillWidth:true;onClicked:if(messenger.setContactRemark(detailRemark.text)){detailRemark.clear();notice.heading="已保存";notice.message="备注只对你可见";notice.open()}}
             TextField{id:editGroupName;visible:peerDetails.groupView;placeholderText:"群名称";maximumLength:64;Layout.fillWidth:true;Layout.minimumWidth:0}
@@ -306,7 +327,7 @@ ApplicationWindow {
             Action{visible:peerDetails.groupView && peerDetails.manager;text:"发布群公告";iconName:"requests";Layout.fillWidth:true;onClicked:if(messenger.setGroupAnnouncement(announcementEdit.text)){notice.heading="公告已保存";notice.message="正在同步给群成员";notice.open()}}
             Label{visible:peerDetails.groupView;text:"群成员与管理员";font.bold:true}
             Repeater{model:{const changed=messenger.contacts;return peerDetails.groupView?messenger.groupMembers():[]}
-                delegate:RowLayout{required property var modelData;Layout.fillWidth:true;Label{text:modelData.name+(modelData.owner?" · 群主":modelData.admin?" · 管理员":"");Layout.fillWidth:true;elide:Text.ElideRight}Switch{visible:peerDetails.owner && !modelData.owner;text:"管理员";checked:modelData.admin;onClicked:messenger.setGroupAdministrator(modelData.id,checked)}}
+                delegate:ColumnLayout{required property var modelData;Layout.fillWidth:true;RowLayout{Layout.fillWidth:true;Label{text:modelData.name+(modelData.owner?" · 群主":modelData.admin?" · 管理员":"");Layout.fillWidth:true;elide:Text.ElideRight}Action{text:"移除";visible:peerDetails.manager && !modelData.owner && (peerDetails.owner || !modelData.admin);onClicked:{kickMember.memberId=modelData.id;kickMember.memberName=modelData.name;kickMember.open()}}}Switch{visible:peerDetails.owner && !modelData.owner;text:"管理员";checked:modelData.admin;onClicked:messenger.setGroupAdministrator(modelData.id,checked)}}
             }
             Action{visible:peerDetails.messageIndex>=0 && messenger.activeIsGroup;text:"加为好友";iconName:"friend";enabled:!peerDetails.details.ready && !!peerDetails.details.relayPublic;Layout.fillWidth:true;onClicked:if(messenger.addMessageSender(peerDetails.messageIndex))peerDetails.close()}
             Action{visible:peerDetails.messageIndex<0 || !messenger.activeIsGroup;text:peerDetails.groupView?"删除群聊":"删除好友";Layout.fillWidth:true;onClicked:removeContactDialog.open()}
@@ -320,6 +341,31 @@ ApplicationWindow {
         onAccepted:if(messenger.removeActiveContact()){peerDetails.close();window.showThread=false}
     }
     Sheet{id:clearHistoryDialog;title:"清空本机记录？";standardButtons:Dialog.Ok|Dialog.Cancel;contentItem:Label{text:"只清空此设备的聊天记录，不删除好友，也不删除对方设备的记录。";wrapMode:Text.Wrap}onAccepted:messenger.clearActiveHistory()}
+    Sheet{id:kickMember;title:"移除群成员？";property string memberId:"";property string memberName:"";standardButtons:Dialog.Ok|Dialog.Cancel;contentItem:Label{text:"将 "+kickMember.memberName+" 移出当前群聊，原有聊天记录不会删除。";wrapMode:Text.Wrap}onAccepted:messenger.removeGroupMember(memberId)}
+    Sheet{id:inviteMembers;title:"邀请好友入群";standardButtons:Dialog.Cancel;property var selected:[];onOpened:selected=[]
+        contentItem:ColumnLayout{Label{text:"选择好友，邀请需要对方同意";color:window.subdued;wrapMode:Text.Wrap;Layout.fillWidth:true}
+            ScrollView{id:inviteScroll;Layout.fillWidth:true;Layout.preferredHeight:250;contentWidth:availableWidth;Column{width:inviteScroll.availableWidth;Repeater{model:messenger.contacts.filter(function(peer){return peer.transport==="relay" && peer.ready && !peer.group && (messenger.activeContactDetails.members||[]).indexOf(peer.relayPublic)<0});delegate:CheckBox{required property var modelData;width:parent.width;text:modelData.name;onClicked:{let values=inviteMembers.selected.slice();if(checked)values.push(modelData.relayPublic);else values=values.filter(x=>x!==modelData.relayPublic);inviteMembers.selected=values}}}}}
+            Action{text:"发送邀请";iconName:"friend";Layout.fillWidth:true;enabled:inviteMembers.selected.length>0;onClicked:if(messenger.inviteGroupMembers(inviteMembers.selected))inviteMembers.close()}
+        }
+    }
+    Sheet{id:historySearch;objectName:"historySearchDialog";title:"查找聊天记录";standardButtons:Dialog.Close;property var results:[];function refresh(){results=messenger.searchHistory(searchInput.text,searchAll.checked)}onOpened:{results=[];searchInput.clear()}
+        contentItem:ColumnLayout{TextField{id:searchInput;objectName:"historySearchInput";placeholderText:"搜索文字或文件名";maximumLength:256;Layout.fillWidth:true;Layout.minimumWidth:0;onTextChanged:searchDelay.restart()}
+            CheckBox{id:searchAll;text:"搜索所有会话";onClicked:historySearch.refresh()}
+            Label{text:historySearch.results.length?"找到 "+historySearch.results.length+" 条（最多显示 200 条）":searchInput.text.trim().length?"没有找到记录":"输入关键词开始查找";color:window.subdued;Layout.fillWidth:true;wrapMode:Text.Wrap}
+            ListView{Layout.fillWidth:true;Layout.preferredHeight:Math.min(300,window.height-300);clip:true;model:historySearch.results;delegate:ItemDelegate{required property var modelData;width:ListView.view.width;height:82;contentItem:Column{spacing:5;Label{width:parent.width;text:modelData.contactName+" · "+modelData.time;color:window.subdued;elide:Text.ElideRight}Label{width:parent.width;text:modelData.body;elide:Text.ElideRight;maximumLineCount:2;wrapMode:Text.Wrap}}onClicked:{messenger.selectContact(modelData.contactId);window.showThread=true;historySearch.close();peerDetails.close();Qt.callLater(function(){thread.positionViewAtIndex(modelData.index,ListView.Center)})}}}
+        }
+    }
+    Timer{id:searchDelay;interval:250;onTriggered:if(historySearch.visible)historySearch.refresh()}
+    Sheet{id:droppedFiles;objectName:"droppedFilesDialog";title:"发送拖入的文件";standardButtons:Dialog.Cancel;property var files:[];property string contactId:"";onRejected:files=[]
+        contentItem:ColumnLayout{Label{text:"发送给："+messenger.activeContactName;Layout.fillWidth:true;elide:Text.ElideRight}
+            ScrollView{id:dropScroll;Layout.fillWidth:true;Layout.preferredHeight:200;contentWidth:availableWidth;ColumnLayout{width:dropScroll.availableWidth;Repeater{model:droppedFiles.files;delegate:Action{required property var modelData;required property int index;text:modelData.name+" · "+(modelData.size/1024/1024).toFixed(2)+" MB";Layout.fillWidth:true;onClicked:if(droppedFiles.contactId===messenger.activeContactId && messenger.queueFile(modelData.url)){droppedFiles.files=droppedFiles.files.filter(function(_,i){return i!==index});if(!droppedFiles.files.length)droppedFiles.close()}}}}
+            }
+            Action{text:"发送全部";iconName:"send";Layout.fillWidth:true;enabled:droppedFiles.files.length>0;onClicked:{if(droppedFiles.contactId!==messenger.activeContactId)return;let remaining=droppedFiles.files.slice();while(remaining.length){if(!messenger.queueFile(remaining[0].url))break;remaining.shift()}droppedFiles.files=remaining;if(!remaining.length)droppedFiles.close()}}
+        }
+    }
+    DropArea {id:fileDrop;objectName:"fileDropArea";z:20;anchors.fill:parent;enabled:Qt.platform.os==="windows";onEntered:function(drag){drag.accepted=drag.hasUrls && messenger.activeContactId.length>0}onDropped:function(drop){if(!drop.hasUrls || !messenger.activeContactId.length)return;let files=[];for(let i=0;i<drop.urls.length;i++){let detail=messenger.droppedFileDetails(drop.urls[i].toString());if(detail.url && !files.some(function(f){return f.url===detail.url}))files.push(detail)}if(files.length){droppedFiles.files=files;droppedFiles.contactId=messenger.activeContactId;droppedFiles.open();drop.acceptProposedAction()}else{notice.heading="无法发送";notice.message="请拖入可读取的本机文件，不支持文件夹或网页链接";notice.open()}}
+        Rectangle{anchors.fill:parent;visible:fileDrop.containsDrag;color:"#441685ef";border.color:window.accent;border.width:3;Label{anchors.centerIn:parent;text:"松开后选择文件发送给当前会话";color:"#203b58";font.pixelSize:20}}
+    }
     RowLayout {
         anchors.fill: parent; anchors.margins: window.mobile ? 0 : 12; spacing: window.mobile ? 0 : 12
         Rectangle {
@@ -405,7 +451,8 @@ ApplicationWindow {
                     ColumnLayout { Layout.fillWidth: true; Layout.minimumWidth: 0; spacing: 2
                         Label { text: messenger.activeContactName; font.bold: true; font.pixelSize: 19; color: "#22354f"; Layout.fillWidth: true; Layout.minimumWidth: 0; elide: Text.ElideRight }
                     }
-                    Action { iconName:"phone";text:"";Layout.preferredWidth:36;Layout.minimumWidth:36;onClicked:messenger.startCall() }
+                    Action { iconName:"phone";text:"";Layout.preferredWidth:36;Layout.minimumWidth:36;onClicked:if(messenger.callState!=="idle")call.open();else messenger.startCall() }
+                    Action {iconName:"requests";text:"";Accessible.name:"查找聊天记录";Layout.preferredWidth:36;Layout.minimumWidth:36;onClicked:historySearch.open()}
                     Action { iconName:messenger.activeIsGroup?"group":"account";text:"";Accessible.name:messenger.activeIsGroup?"群聊详情":"好友详情";Layout.preferredWidth:36;Layout.minimumWidth:36;onClicked:window.openPeerDetails() }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#e0e8f2" }
@@ -426,7 +473,7 @@ ApplicationWindow {
                             ColumnLayout {
                                 id: bubbleContents; anchors.fill: parent; anchors.margins: 12; spacing: 6
                                 TextEdit { text: modelData.body; visible:modelData.kind!=="sticker" && modelData.kind!=="photo"; readOnly:true;selectByMouse:true;selectByKeyboard:true;textFormat:TextEdit.PlainText;color: "#203b58"; wrapMode: TextEdit.WrapAnywhere; Layout.fillWidth: true; Layout.minimumWidth: 0; font.pixelSize: 15
-                                    renderType:TextEdit.NativeRendering
+                                    renderType:TextEdit.QtRendering
                                     TapHandler{acceptedButtons:Qt.LeftButton|Qt.RightButton;onLongPressed:{messageMenu.messageIndex=index;messageMenu.popup()}onTapped:function(eventPoint,button){if(button===Qt.RightButton){messageMenu.messageIndex=index;messageMenu.popup()}}}
                                 }
                                 Image { id:messageImage; visible: modelData.kind === "sticker" || modelData.kind === "photo"; source: visible ? "data:image/"+(modelData.kind==="photo"?"jpeg":"png")+";base64," + modelData.fileData : ""; Layout.fillWidth: true; Layout.preferredHeight: visible ? 180 : 0; fillMode: Image.PreserveAspectFit

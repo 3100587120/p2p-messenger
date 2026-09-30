@@ -7,10 +7,16 @@ import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Build;
+import android.os.PowerManager;
+import android.os.Handler;
+import android.os.Looper;
 import org.qtproject.qt.android.bindings.QtService;
 
 /** Dedicated process: owns the encrypted session only while the UI is away. */
 public final class MessageService extends QtService {
+    private PowerManager.WakeLock messageWakeLock;
+    private final Handler heartbeat=new Handler(Looper.getMainLooper());
+    private final Runnable renewWakeLock=new Runnable(){public void run(){if(messageWakeLock!=null){messageWakeLock.acquire(10*60*1000L);heartbeat.postDelayed(this,5*60*1000L);}}};
     public static boolean enabled(Context context) { return context.getSharedPreferences("background-messages",0).getBoolean("enabled",true); }
     public static boolean configure(Context context, boolean enabled) {
         context.getSharedPreferences("background-messages",0).edit().putBoolean("enabled",enabled).apply();
@@ -31,7 +37,10 @@ public final class MessageService extends QtService {
     }
     public static boolean openBackgroundSettings(Context context) {
         try {
-            Intent settings=new Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS);
+            PowerManager power=(PowerManager)context.getSystemService(Context.POWER_SERVICE);
+            Intent settings=Build.VERSION.SDK_INT>=23 && power!=null && !power.isIgnoringBatteryOptimizations(context.getPackageName())
+                ?new Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,android.net.Uri.parse("package:"+context.getPackageName()))
+                :new Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS);
             settings.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);context.startActivity(settings);return true;
         } catch(Exception error) {
             try {
@@ -50,7 +59,11 @@ public final class MessageService extends QtService {
         Notification.Builder builder=Build.VERSION.SDK_INT>=26?new Notification.Builder(this,"background"):new Notification.Builder(this);
         startForeground(31005,builder.setSmallIcon(icon).setContentTitle("双点聊 · 后台收消息").setContentText("关闭聊天界面后保持连接，点击返回应用").setContentIntent(click).setOngoing(true).build());
         super.onCreate();
+        PowerManager power=(PowerManager)getSystemService(POWER_SERVICE);
+        if(power!=null){messageWakeLock=power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,getPackageName()+":messages");messageWakeLock.setReferenceCounted(false);renewWakeLock.run();}
     }
+    @Override public void onDestroy(){heartbeat.removeCallbacks(renewWakeLock);if(messageWakeLock!=null && messageWakeLock.isHeld())messageWakeLock.release();messageWakeLock=null;super.onDestroy();}
+    @Override public void onTaskRemoved(Intent rootIntent){super.onTaskRemoved(rootIntent);/* This independent foreground service intentionally survives removal of the UI task. */}
     public static boolean openAppSettings(Context context) {
         try {Intent intent=new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,android.net.Uri.parse("package:"+context.getPackageName()));intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);context.startActivity(intent);return true;}catch(Exception error){return false;}
     }

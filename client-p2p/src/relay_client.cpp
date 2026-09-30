@@ -114,6 +114,8 @@ RelayClient::RelayClient(LocalVault& vault, QObject* parent)
             directoryDeadline_.start();
         }
         resendOutbox();
+        friendRepairQuery_=QUuid::createUuid().toString(QUuid::WithoutBraces);
+        socket_.sendTextMessage(QString::fromUtf8(QJsonDocument(QJsonObject{{"op","friend_repair_get"},{"id",friendRepairQuery_}}).toJson(QJsonDocument::Compact)));
         if(backupDirty_)backupTimer_.start();
     });
     connect(&socket_, &QWebSocket::disconnected, this, [this] {
@@ -426,6 +428,13 @@ void RelayClient::onFrame(const QString& text)
     const auto frame = document.object();
     const auto op = frame.value(QStringLiteral("op")).toString();
     const auto directoryId = frame.value(QStringLiteral("id")).toString();
+    if(op=="friend_repair_result" && !friendRepairQuery_.isEmpty() && directoryId==friendRepairQuery_){
+        friendRepairQuery_.clear();const auto repair=frame.value("repair").toObject();if(repair.isEmpty())return;
+        if(repair.value("envelope").toString().size()>8000)return;
+        bool ok=false;const auto plain=crypto_.open(repair.value("from").toString(),repair.value("id").toString(),repair.value("envelope").toString().toLatin1(),&ok);
+        if(ok && plain.value("type")=="operator_friend_repair" && plain.value("code").toString()==inviteCode())emit friendRepairReceived(repair.value("id").toString(),plain.toVariantMap());
+        return;
+    }
     if(op=="contacts_get_result" && directoryId==backupRequest_ && backupRestoring_){
         const auto snapshot=frame.value("snapshot").toObject();
         if(!snapshot.isEmpty()){bool ok=false;const auto plain=crypto_.open(identityId(),snapshot.value("id").toString(),snapshot.value("envelope").toString().toLatin1(),&ok);
