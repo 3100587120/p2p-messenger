@@ -34,10 +34,19 @@ static int identityRegression()
             return 6;
         }
     }
-    MessengerController reopened;
-    if (reopened.profileName() != "New name" || reopened.contacts().size() != 2 ||
-        vault.loadConversation("direct-history") != history ||
-        !reopened.setAssistedConnection(true) || reopened.inviteCode() != code) return 6;
+    {
+        MessengerController reopened;
+        if (reopened.profileName() != "New name" || reopened.contacts().size() != 2 ||
+            vault.loadConversation("direct-history") != history ||
+            !reopened.setAssistedConnection(true) || reopened.inviteCode() != code) return 6;
+    }
+    // A present but unreadable/invalid profile must never be silently replaced.
+    if (!vault.saveConversation("__profile", {})) return 6;
+    MessengerController invalidProfile;
+    if (!invalidProfile.lastError().contains(QStringLiteral("账号资料无法解密")) ||
+        invalidProfile.setProfileName("Must not overwrite") ||
+        !vault.hasConversation("__profile") || !vault.loadConversation("__profile").isEmpty() ||
+        vault.loadConversation("direct-history") != history) return 6;
     std::cout << "ENGINE_INDEPENDENCE_AND_PROFILE_PERSISTENCE=PASS" << std::endl;
     return 0;
 }

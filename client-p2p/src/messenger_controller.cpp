@@ -591,6 +591,7 @@ MessengerController::MessengerController(QObject* parent)
     });
     if (!accountId_.isEmpty()) identityRefresh_->start();
     const auto savedProfile = vault_.loadConversation(QStringLiteral("__profile"));
+    profileReadable_ = !savedProfile.isEmpty() || !vault_.hasConversation(QStringLiteral("__profile"));
     if (!savedProfile.isEmpty()) {
         const auto profile = savedProfile.first().toMap();
         // The encrypted vault (and relay key), not the optional direct engine,
@@ -649,7 +650,13 @@ MessengerController::MessengerController(QObject* parent)
     relay_.setEndpoint(QUrl(relayEndpoint_));
     const auto savedRelayFiles = vault_.loadConversation(QStringLiteral("__relay_files"));
     if (!savedRelayFiles.isEmpty()) incomingRelayFiles_ = savedRelayFiles.first().toMap();
-    relay_.setEnabled(assistedConnection_);
+    relay_.setEnabled(assistedConnection_ && profileReadable_);
+    if (!vault_.isReady() || !profileReadable_ || !relay_.isReady()) {
+        networkStatus_ = tr("本机加密账号未就绪 — 原有数据已保留");
+        setError(!vault_.isReady() ? vault_.error() : !profileReadable_
+            ? tr("本地账号资料无法解密，已保留原文件，未重置账号或聊天记录。")
+            : tr("端到端加密身份无法读取或生成，已保留原有数据。"));
+    }
     if (assistedConnection_ && !relay_.hasEndpoint()) {
         networkStatus_ = tr("辅助中继尚未部署，不能发送异网申请");
         emit networkStatusChanged();
@@ -1597,6 +1604,7 @@ bool MessengerController::storeMessageForContact(const QString& contactId, const
 
 bool MessengerController::saveProfile()
 {
+    if (!profileReadable_) return false;
     return vault_.saveConversation(QStringLiteral("__profile"),
                             {QVariantMap {{QStringLiteral("accountId"), accountId_},
                                           {QStringLiteral("profileName"), profileName_},

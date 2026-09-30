@@ -125,6 +125,7 @@ private:
     QString peerProbePacketId_;
     QString selfTestPacketId_;
     bool selfTestPassed_ {false};
+    bool profileReadable_ {true};
     QVariantMap pendingRelayRequests_;
     QVariantMap pendingRelayGroups_;
     QVariantMap incomingRelayFiles_;

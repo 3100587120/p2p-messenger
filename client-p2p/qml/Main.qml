@@ -26,6 +26,10 @@ ApplicationWindow {
     Timer { id: copiedReset; interval: 3000; onTriggered: window.pairingCopied = false }
 
     Component.onCompleted: {
+        if (messenger.lastError.length > 0) {
+            Qt.callLater(function() { failureDialog.open() })
+            return
+        }
         if (messenger.profileName.length === 0)
             Qt.callLater(function() { accountSettings.open() })
         if (messenger.pendingRequests.length > 0)
