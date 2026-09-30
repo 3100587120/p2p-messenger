@@ -135,6 +135,18 @@ MessengerController::MessengerController(QObject* parent)
         } else {
             selfTestPassed_ = false;
             networkStatus_ = tr("辅助连接未接通 — 好友申请会留在本机重试");
+            bool changed = false;
+            for (auto& item : contacts_) {
+                auto entry = item.toMap();
+                if (entry.value(QStringLiteral("transport")).toString() != QStringLiteral("relay") ||
+                    entry.value(QStringLiteral("ready")).toBool() ||
+                    entry.value(QStringLiteral("requestPacketId")).toString().isEmpty() ||
+                    entry.value(QStringLiteral("requestDelivery")).toString() == QStringLiteral("delivered")) continue;
+                entry.insert(QStringLiteral("status"), tr("尚未确认送达：本机中继连接已断开，恢复后自动重试"));
+                item = entry;
+                changed = true;
+            }
+            if (changed) emit contactsChanged();
         }
         emit networkStatusChanged();
     });
@@ -148,10 +160,18 @@ MessengerController::MessengerController(QObject* parent)
         // It must not create a contact or appear in chat history.
         if (type == QStringLiteral("probe")) return;
         if (type == QStringLiteral("friend_request")) {
+            const auto previousRequests = pendingRelayRequests_;
+            const auto previousPending = pendingRequests_;
             pendingRelayRequests_.insert(senderId, QString::fromLatin1(senderPublic.toBase64(
                 QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals)));
             if (!pendingRequests_.contains(senderId)) pendingRequests_.append(senderId);
-            if (!saveProfile()) { relay_.rejectCurrentPacket(); setError(tr("好友申请无法保存到本机")); }
+            if (!saveProfile()) {
+                pendingRelayRequests_ = previousRequests;
+                pendingRequests_ = previousPending;
+                relay_.rejectCurrentPacket();
+                setError(tr("好友申请未能保存，因此未确认收到；对方会重试。原因：%1").arg(vault_.error()));
+                return;
+            }
             emit pendingRequestsChanged();
             return;
         }
@@ -160,10 +180,16 @@ MessengerController::MessengerController(QObject* parent)
                 auto entry = item.toMap();
                 if (entry.value(QStringLiteral("transport")).toString() != QStringLiteral("relay") ||
                     entry.value(QStringLiteral("uri")).toString() != senderId) continue;
+                const auto previous = item;
                 entry.insert(QStringLiteral("ready"), true);
                 entry.insert(QStringLiteral("status"), tr("已验证"));
                 item = entry;
-                if (!saveProfile()) { relay_.rejectCurrentPacket(); setError(tr("好友确认无法保存到本机")); }
+                if (!saveProfile()) {
+                    item = previous;
+                    relay_.rejectCurrentPacket();
+                    setError(tr("好友确认未能保存，尚未成为可聊天的好友。原因：%1").arg(vault_.error()));
+                    return;
+                }
                 emit contactsChanged();
                 return;
             }
@@ -185,9 +211,17 @@ MessengerController::MessengerController(QObject* parent)
             if (!senderIncluded || !selfIncluded) return;
             for (const auto& item : contacts_)
                 if (item.toMap().value(QStringLiteral("groupId")).toString() == groupId) return;
+            const auto previousGroups = pendingRelayGroups_;
+            const auto previousPending = pendingGroupRequests_;
             pendingRelayGroups_.insert(groupId, message.toVariantMap());
             if (!pendingGroupRequests_.contains(groupId)) pendingGroupRequests_.append(groupId);
-            if (!saveProfile()) { relay_.rejectCurrentPacket(); setError(tr("群邀请无法保存到本机")); }
+            if (!saveProfile()) {
+                pendingRelayGroups_ = previousGroups;
+                pendingGroupRequests_ = previousPending;
+                relay_.rejectCurrentPacket();
+                setError(tr("群邀请未能保存，因此未确认收到。原因：%1").arg(vault_.error()));
+                return;
+            }
             emit pendingGroupRequestsChanged();
             return;
         }
@@ -292,11 +326,9 @@ MessengerController::MessengerController(QObject* parent)
                 if (entry.value(QStringLiteral("transport")).toString() == QStringLiteral("relay") &&
                     entry.value(QStringLiteral("uri")).toString() == senderId) {
                     if (!entry.value(QStringLiteral("ready")).toBool()) {
-                        entry.insert(QStringLiteral("ready"), true);
-                        entry.insert(QStringLiteral("status"), tr("已验证"));
-                        item = entry;
-                        if (!saveProfile()) relay_.rejectCurrentPacket();
-                        emit contactsChanged();
+                        // A message is not an acceptance of a friend request.
+                        relay_.rejectCurrentPacket();
+                        return;
                     }
                     if (!storeMessageForContact(entry.value(QStringLiteral("id")).toString(), QVariantMap {
                         {QStringLiteral("body"), body},
@@ -347,6 +379,7 @@ MessengerController::MessengerController(QObject* parent)
             else if (state == QStringLiteral("delivered"))
                 entry.insert(QStringLiteral("status"), tr("对方已收到申请，等待确认"));
             else continue;
+            entry.insert(QStringLiteral("requestDelivery"), state);
             item = entry;
             contactsChangedLocal = true;
         }

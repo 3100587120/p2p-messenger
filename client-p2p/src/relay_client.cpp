@@ -279,11 +279,13 @@ void RelayClient::onFrame(const QString& text)
     if (op == QStringLiteral("relay")) {
         const auto id = frame.value(QStringLiteral("id")).toString();
         const auto status = frame.value(QStringLiteral("status")).toString();
-        if (outbox_.contains(id)) {
-            const auto recipient = outbox_.value(id).to;
-            if (status == QStringLiteral("recipient_offline")) offlineRecipients_.insert(recipient);
-            else if (status == QStringLiteral("forwarded")) offlineRecipients_.remove(recipient);
-        }
+        // Routing metadata is not an authenticated device receipt. In
+        // particular, a relay must never be able to assert "delivered".
+        if (!outbox_.contains(id) || (status != QStringLiteral("recipient_offline") &&
+                                    status != QStringLiteral("forwarded"))) return;
+        const auto recipient = outbox_.value(id).to;
+        if (status == QStringLiteral("recipient_offline")) offlineRecipients_.insert(recipient);
+        else offlineRecipients_.remove(recipient);
         emit deliveryState(id, status);
         return;
     }

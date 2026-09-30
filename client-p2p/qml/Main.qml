@@ -173,7 +173,7 @@ ApplicationWindow {
             }
             Label {
                 text: messenger.assistedConnection
-                      ? "通过你的 Cloudflare 中继转发端到端加密内容；中继可见通信时间和对象，但看不到消息与文件明文。对方收到后才显示送达。"
+                      ? "通过你配置的中继转发端到端加密内容；中继可见通信时间和对象，但看不到消息与文件明文。对方设备保存并返回加密回执后才显示送达。"
                       : "默认模式：不连接公共引导或中继。跨网连接取决于双方网络是否允许直连；失败时可自行切换辅助连接。"
                 color: window.subdued; wrapMode: Text.Wrap; Layout.fillWidth: true; font.pixelSize: 12
             }
@@ -211,7 +211,7 @@ ApplicationWindow {
                     required property var modelData
                     text: "添加 " + modelData.name
                     Layout.fillWidth: true
-                    onClicked: { if (messenger.addNearbyPeer(modelData.uri)) { addFriend.close(); requestSubmittedDialog.open() } }
+                    onClicked: { if (messenger.addNearbyPeer(modelData.uri)) { requestSubmittedDialog.requestedContactId = messenger.activeContactId; addFriend.close(); requestSubmittedDialog.open() } }
                 }
             }
             Label { text: "暂无附近设备，可粘贴配对码"; color: window.subdued; visible: messenger.nearbyPeers.length === 0; Layout.fillWidth: true }

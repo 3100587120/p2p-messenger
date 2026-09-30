@@ -4,11 +4,76 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QEventLoop>
+#include <QHostAddress>
 #include <QJsonObject>
+#include <QJsonDocument>
+#include <QWebSocketServer>
 #include <QTemporaryDir>
 #include <QTimer>
 
 #include <iostream>
+
+static int untrustedReceiptRegression(QCoreApplication& app)
+{
+    QTemporaryDir root(QDir::tempPath() + "/relay-receipt-test-XXXXXX");
+    if (!root.isValid()) return 7;
+    qputenv("P2P_MESSENGER_DATA_ROOT", QDir(root.path()).filePath("alice").toUtf8());
+    LocalVault aliceVault;
+    RelayClient alice(aliceVault);
+    qputenv("P2P_MESSENGER_DATA_ROOT", QDir(root.path()).filePath("bob").toUtf8());
+    LocalVault bobVault;
+    RelayCrypto bob;
+    if (!alice.isReady() || !bob.loadOrCreate(bobVault)) return 7;
+    QWebSocketServer server("receipt-test", QWebSocketServer::NonSecureMode);
+    if (!server.listen(QHostAddress::LocalHost, 0)) return 7;
+    QString sentId;
+    bool forwarded = false, realAckSent = false, delivered = false, invalidSignal = false;
+    QObject::connect(&alice, &RelayClient::deliveryState, &app, [&](const QString& id, const QString& state) {
+        if (id == "unknown-packet") invalidSignal = true;
+        if (id != sentId) return;
+        if (state == "forwarded") forwarded = true;
+        if (state == "delivered") {
+            if (!realAckSent) invalidSignal = true;
+            delivered = true;
+            app.quit();
+        }
+    });
+    QObject::connect(&server, &QWebSocketServer::newConnection, &app, [&] {
+        auto* socket = server.nextPendingConnection();
+        QObject::connect(socket, &QWebSocket::disconnected, socket, &QObject::deleteLater);
+        QObject::connect(socket, &QWebSocket::textMessageReceived, &app, [&, socket](const QString& text) {
+            const auto frame = QJsonDocument::fromJson(text.toUtf8()).object();
+            if (frame.value("op") != "send") return;
+            const auto id = frame.value("id").toString();
+            for (const auto& state : {QStringLiteral("delivered"), QStringLiteral("forwarded")})
+                socket->sendTextMessage(QString::fromUtf8(QJsonDocument(QJsonObject {
+                    {"op", "relay"}, {"id", id}, {"status", state}}).toJson(QJsonDocument::Compact)));
+            socket->sendTextMessage(QString::fromUtf8(QJsonDocument(QJsonObject {
+                {"op", "relay"}, {"id", "unknown-packet"}, {"status", "forwarded"}}).toJson(QJsonDocument::Compact)));
+            QTimer::singleShot(200, &app, [&, socket, id] {
+                if (invalidSignal || delivered || !forwarded) { app.exit(7); return; }
+                const auto envelope = bob.seal(RelayClient::publicKeyFromCode(alice.inviteCode()),
+                    "authenticated-ack", QJsonObject {{"type", "ack"}, {"id", id}});
+                if (envelope.isEmpty()) { app.exit(7); return; }
+                realAckSent = true;
+                socket->sendTextMessage(QString::fromUtf8(QJsonDocument(QJsonObject {
+                    {"op", "packet"}, {"id", "authenticated-ack"}, {"from", bob.identityId()},
+                    {"envelope", QString::fromLatin1(envelope)}}).toJson(QJsonDocument::Compact)));
+            });
+        });
+    });
+    QObject::connect(&alice, &RelayClient::connectedChanged, &app, [&](bool connected) {
+        if (connected) sentId = alice.send(RelayClient::publicKeyFromCode(bob.inviteCode()),
+                                           QJsonObject {{"type", "friend_request"}});
+    });
+    alice.setEndpoint(QUrl(QStringLiteral("ws://127.0.0.1:%1").arg(server.serverPort())));
+    alice.setEnabled(true);
+    QTimer::singleShot(5000, &app, &QCoreApplication::quit);
+    app.exec();
+    if (!forwarded || !realAckSent || !delivered || invalidSignal) return 7;
+    std::cout << "RELAY_METADATA_CANNOT_FORGE_DELIVERY_AUTHENTICATED_ACK_REQUIRED=PASS" << std::endl;
+    return 0;
+}
 
 static int inspectProfile(QCoreApplication& app, const QString& profileRoot)
 {
@@ -91,6 +156,7 @@ static int runRemoteReceiver(QCoreApplication& app)
 int main(int argc, char** argv)
 {
     QCoreApplication app(argc, argv);
+    if (app.arguments().contains("--untrusted-receipt-regression")) return untrustedReceiptRegression(app);
     if (!qEnvironmentVariable("P2P_MESSENGER_RELAY_PROFILE_ROOT").isEmpty())
         return inspectProfile(app, qEnvironmentVariable("P2P_MESSENGER_RELAY_PROFILE_ROOT"));
     if (qEnvironmentVariableIsSet("P2P_MESSENGER_RELAY_TEST_REMOTE_RECEIVER"))

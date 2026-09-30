@@ -6,6 +6,10 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QCryptographicHash>
+#include <QLockFile>
+#include <QJsonArray>
+#include <QQmlApplicationEngine>
+#include <QQmlContext>
 #include <iostream>
 
 static QString vaultFile(const QString& root, const QString& slot)
@@ -110,6 +114,76 @@ static int identityRegression()
     return 0;
 }
 
+static int friendPersistenceRegression(const QString& root)
+{
+    // Inject already-authenticated packets at the controller boundary. This
+    // exercises persistence/UI state, not network reachability or encryption.
+    const auto peerRoot = QDir(root).filePath("peer");
+    qputenv("P2P_MESSENGER_DATA_ROOT", peerRoot.toUtf8());
+    LocalVault peerVault;
+    RelayCrypto peer;
+    if (!peer.loadOrCreate(peerVault)) return 8;
+    const auto peerCode = peer.inviteCode();
+    const auto peerKey = RelayClient::publicKeyFromCode(peerCode);
+    const auto peerId = peer.identityId();
+    qputenv("P2P_MESSENGER_DATA_ROOT", root.toUtf8());
+    LocalVault vault;
+    const QVariantList contacts {QVariantMap {
+        {"id", "pending-friend"}, {"name", "Pending friend"}, {"uri", peerId},
+        {"transport", "relay"}, {"relayPublic", peerCode}, {"ready", false},
+        {"requestPacketId", "request-1"}, {"status", "waiting"}}};
+    if (!vault.saveConversation("__profile", {QVariantMap {
+            {"contacts", contacts}, {"network", QVariantMap {
+                {"assistedConnection", false}, {"relayEndpoint", "ws://localhost:1"}}}}})) return 8;
+    MessengerController controller;
+    auto* relay = controller.findChild<RelayClient*>();
+    if (!relay || !controller.setAssistedConnection(true)) return 8;
+    relay->connectedChanged(false);
+    if (!controller.contacts().first().toMap().value("status").toString().contains(QStringLiteral("尚未确认送达"))) return 8;
+    relay->deliveryState("request-1", "delivered");
+    const auto deliveredStatus = controller.contacts().first().toMap().value("status").toString();
+    relay->connectedChanged(false);
+    if (!deliveredStatus.contains(QStringLiteral("对方已收到")) ||
+        controller.contacts().first().toMap().value("status").toString() != deliveredStatus) return 8;
+
+    int pendingChanges = 0, contactChanges = 0;
+    QObject::connect(&controller, &MessengerController::pendingRequestsChanged,
+                     &controller, [&] { ++pendingChanges; });
+    QObject::connect(&controller, &MessengerController::contactsChanged,
+                     &controller, [&] { ++contactChanges; });
+    QLockFile lock(vaultFile(root, "__profile") + ".lock");
+    lock.setStaleLockTime(0);
+    if (!lock.tryLock(0)) return 8;
+    relay->packetReceived(peerId, peerKey, QJsonObject {{"type", "friend_request"}});
+    if (!controller.pendingRequests().isEmpty() || pendingChanges != 0 ||
+        !controller.lastError().contains(QStringLiteral("原因")) ||
+        !vault.loadConversation("__profile").first().toMap().value("pendingRelayRequests").toMap().isEmpty()) return 8;
+    relay->packetReceived(peerId, peerKey, QJsonObject {
+        {"type", "group_invite"}, {"groupId", "test-group"},
+        {"members", QJsonArray {peerCode, relay->inviteCode()}}});
+    if (!controller.pendingGroupRequests().isEmpty() ||
+        !vault.loadConversation("__profile").first().toMap().value("pendingRelayGroups").toMap().isEmpty()) return 8;
+    lock.unlock();
+    relay->packetReceived(peerId, peerKey, QJsonObject {{"type", "friend_request"}});
+    if (controller.pendingRequests() != QStringList {peerId} || pendingChanges != 1 ||
+        !vault.loadConversation("__profile").first().toMap().value("pendingRelayRequests").toMap().contains(peerId)) return 8;
+
+    const auto beforeContacts = controller.contacts();
+    const auto beforeMessages = controller.messages();
+    relay->packetReceived(peerId, peerKey, QJsonObject {{"type", "text"}, {"body", "not an acceptance"}});
+    if (controller.contacts() != beforeContacts || controller.messages() != beforeMessages || contactChanges != 0) return 8;
+    if (!lock.tryLock(0)) return 8;
+    relay->packetReceived(peerId, peerKey, QJsonObject {{"type", "friend_accept"}});
+    if (controller.contacts() != beforeContacts || contactChanges != 0 ||
+        vault.loadConversation("__profile").first().toMap().value("contacts").toList().first().toMap().value("ready").toBool()) return 8;
+    lock.unlock();
+    relay->packetReceived(peerId, peerKey, QJsonObject {{"type", "friend_accept"}});
+    if (!controller.contacts().first().toMap().value("ready").toBool() || contactChanges != 1 ||
+        !vault.loadConversation("__profile").first().toMap().value("contacts").toList().first().toMap().value("ready").toBool()) return 8;
+    std::cout << "FRIEND_PERSISTENCE_FAILURE_AND_DELIVERY_STATUS=PASS" << std::endl;
+    return 0;
+}
+
 int main(int argc, char** argv)
 {
     qputenv("QT_QPA_PLATFORM", "offscreen");
@@ -117,11 +191,47 @@ int main(int argc, char** argv)
     QTemporaryDir root(QDir::tempPath() + "/friend-flow-XXXXXX");
     if (!root.isValid()) return 2;
     qputenv("P2P_MESSENGER_DATA_ROOT", root.path().toUtf8());
+    if (app.arguments().contains("--qml-smoke")) {
+        const auto pathIndex = app.arguments().indexOf("--qml-path");
+        const auto path = app.arguments().value(pathIndex + 1);
+        if (pathIndex < 0 || !QFileInfo::exists(path)) return 9;
+        MessengerController controller;
+        QQmlApplicationEngine engine;
+        bool warnings = false;
+        QObject::connect(&engine, &QQmlEngine::warnings, &app, [&](const QList<QQmlError>& errors) {
+            warnings = true;
+            for (const auto& error : errors) std::cerr << error.toString().toStdString() << std::endl;
+        });
+        engine.rootContext()->setContextProperty("messenger", &controller);
+        engine.load(QUrl::fromLocalFile(path));
+        if (engine.rootObjects().size() != 1) {
+            std::cerr << "QML load failed: root_count=" << engine.rootObjects().size() << std::endl;
+            return 9;
+        }
+        auto* window = engine.rootObjects().first();
+        if (window->property("mobile").toBool()) {
+            std::cerr << "QML desktop layout unexpectedly mobile" << std::endl;
+            return 9;
+        }
+        window->setProperty("minimumWidth", 320);
+        window->setProperty("width", 390);
+        window->setProperty("height", 780);
+        QTimer::singleShot(100, &app, &QCoreApplication::quit);
+        app.exec();
+        if (warnings || !window->property("mobile").toBool()) {
+            std::cerr << "QML portrait layout failed: width=" << window->property("width").toInt()
+                      << " mobile=" << window->property("mobile").toBool() << " warnings=" << warnings << std::endl;
+            return 9;
+        }
+        std::cout << "QML_DESKTOP_AND_PORTRAIT_LAYOUT_LOAD=PASS" << std::endl;
+        return 0;
+    }
     if (app.arguments().contains("--empty-profile-regression")) {
         const auto index = app.arguments().indexOf("--fixture-root");
         return emptyProfileRegression(root.path(), index >= 0 ? app.arguments().value(index + 1) : QString {});
     }
     if (app.arguments().contains("--identity-regression")) return identityRegression();
+    if (app.arguments().contains("--friend-persistence-regression")) return friendPersistenceRegression(root.path());
     MessengerController controller;
     bool invitationPrinted = false, accepted = false, receivedText = false, sentText = false;
     const bool reciprocal = app.arguments().contains("--reciprocal");
