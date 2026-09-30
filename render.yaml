@@ -1,0 +1,23 @@
+# Optional free hosting candidate, not yet deployed or China-WAN validated.
+# No databases, disks, paid plans or automatic repeat deployments.
+services:
+  - type: web
+    name: shuangdianliao-relay-free
+    runtime: node
+    plan: free
+    region: singapore
+    branch: master
+    rootDir: relay
+    buildCommand: cd standalone && npm ci --omit=dev --ignore-scripts
+    startCommand: node standalone/server.js
+    healthCheckPath: /health
+    autoDeployTrigger: "off"
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: NODE_ENV
+        value: production
+      - key: RELAY_HOST
+        value: 0.0.0.0
+      - key: RELAY_BEHIND_TLS_PROXY
+        value: "1"

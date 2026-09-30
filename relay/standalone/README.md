@@ -25,6 +25,21 @@ npm start
 也可设置 `RELAY_TLS_KEY`、`RELAY_TLS_CERT`、`RELAY_HOST`、`RELAY_PORT`，直接提供 HTTPS/WSS。
 无 TLS 时拒绝监听公网。不得关闭客户端证书验证。
 
+## 可选免费托管候选：Render
+
+根目录 `render.yaml` 只定义 1 个免费实例，不添加付费数据库或磁盘，并关闭自动重复部署。
+只在其可信 HTTPS/WSS 入口之后使用 `RELAY_BEHIND_TLS_PROXY=1`，让内部容器监听 `0.0.0.0:$PORT`。
+这个变量不能用于将裸 HTTP 直接暴露公网；客户端仍必须使用 WSS，不能忽略证书错误。
+部署需要用户登录 Render 并授权访问该 GitHub 仓库。不要添加支付方式；若账号已有支付方式，需先确认额度超限计费风险。
+若要求付款/绑卡或免费套餐不可用，应停止，不偷偷选择收费实例。
+
+免费套餐有休眠/冷启动与每月资源限制，不承诺始终在线。
+2026-09-30 本机关闭代理访问 Render 官网返回 200，公开示例域名 HTTPS 返回 503。
+这只能说明样例 TLS 路径可达，不能证明新服务的 WSS 或国内蜂窝网可达。
+部署后必须关闭代理验收实际域名和好友请求，再决定是否替换客户端默认地址和打包。
+
+官方资料：[免费套餐](https://render.com/docs/free)、[WebSocket](https://render.com/docs/websocket)、[部署配置](https://render.com/docs/blueprint-spec)。
+
 客户端辅助连接地址填 `wss://你的域名`；纯直连模式不访问该服务。
 这是运维部署步骤，部署后应把验证过的地址内置到客户端，普通用户不需要填服务器配置。
 

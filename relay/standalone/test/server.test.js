@@ -2,7 +2,17 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import WebSocket from "ws";
-import { createRelay } from "../server.js";
+import { createRelay, listenerConfig } from "../server.js";
+
+test("managed hosting binding requires explicit TLS proxy trust and uses PORT", () => {
+  assert.throws(() => listenerConfig({ RELAY_HOST: "0.0.0.0", PORT: "10000" }), /requires TLS/);
+  const managed = listenerConfig({ RELAY_HOST: "0.0.0.0", PORT: "10000", RELAY_BEHIND_TLS_PROXY: "1" });
+  assert.equal(managed.host, "0.0.0.0");
+  assert.equal(managed.port, 10000);
+  assert.equal(managed.behindTlsProxy, true);
+  assert.throws(() => listenerConfig({ PORT: "not-a-port" }), /Invalid/);
+  assert.throws(() => listenerConfig({ RELAY_TLS_KEY: "without-cert" }), /Set both/);
+});
 
 async function withRelay(t, options) {
   const relay = createRelay(options);

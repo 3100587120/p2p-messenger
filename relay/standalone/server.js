@@ -7,6 +7,20 @@ import { Router } from "../src/worker.js";
 
 const identityPattern = /^[0-9a-f]{64}$/;
 
+export function listenerConfig(environment = process.env) {
+  const keyPath = environment.RELAY_TLS_KEY, certPath = environment.RELAY_TLS_CERT;
+  if (Boolean(keyPath) !== Boolean(certPath)) throw new Error("Set both RELAY_TLS_KEY and RELAY_TLS_CERT");
+  const host = environment.RELAY_HOST ?? "127.0.0.1";
+  // Managed platforms terminate public WSS at their TLS ingress and route
+  // HTTP into a private container. This exception is explicit, not automatic.
+  const behindTlsProxy = environment.RELAY_BEHIND_TLS_PROXY === "1";
+  if (!keyPath && !behindTlsProxy && !["127.0.0.1", "::1", "localhost"].includes(host))
+    throw new Error("Public listener requires TLS or an explicitly trusted TLS reverse proxy");
+  const port = Number(environment.RELAY_PORT ?? environment.PORT ?? 8787);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Invalid RELAY_PORT or PORT");
+  return { keyPath, certPath, host, port, behindTlsProxy };
+}
+
 // Shares the exact opaque-message router with the Cloudflare implementation.
 // No decryption keys, offline database or public Cloudflare dependency here.
 export function createRelay({ tls, maxConnections = 1000, maxPerIp = 20 } = {}) {
@@ -80,16 +94,8 @@ export function createRelay({ tls, maxConnections = 1000, maxPerIp = 20 } = {}) 
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const keyPath = process.env.RELAY_TLS_KEY, certPath = process.env.RELAY_TLS_CERT;
-  if (Boolean(keyPath) !== Boolean(certPath)) throw new Error("Set both RELAY_TLS_KEY and RELAY_TLS_CERT");
+  const { keyPath, certPath, host, port } = listenerConfig();
   const tls = keyPath ? { key: readFileSync(keyPath), cert: readFileSync(certPath), minVersion: "TLSv1.2" } : undefined;
-  const host = process.env.RELAY_HOST ?? "127.0.0.1";
-  // Cleartext is deliberately loopback-only. For public access use a trusted
-  // TLS certificate here or keep loopback binding behind a TLS reverse proxy.
-  if (!tls && !["127.0.0.1", "::1", "localhost"].includes(host))
-    throw new Error("Public listener requires TLS; use a reverse proxy for loopback HTTP");
-  const port = Number(process.env.RELAY_PORT ?? 8787);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Invalid RELAY_PORT");
   const relay = createRelay({ tls });
   relay.server.listen(port, host, () => console.log(`双点聊 encrypted relay: ${tls ? "https" : "http"}://${host}:${port}`));
   for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => { relay.close().then(() => process.exit(0)); });
