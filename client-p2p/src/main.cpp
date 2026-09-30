@@ -33,6 +33,7 @@ int main(int argc, char* argv[])
     // from the emulator's unsupported Qt GUI SIMD instruction translation.
     // Normal launches and UI acceptance do not take this path.
     if (androidAcceptanceHeadless()) {
+        qputenv("P2P_MESSENGER_DISABLE_DIRECT_ENGINE", "1");
         QCoreApplication application(argc, argv);
         QCoreApplication::setApplicationName(QStringLiteral("P2P Messenger"));
         QCoreApplication::setOrganizationName(QStringLiteral("P2P Messenger"));

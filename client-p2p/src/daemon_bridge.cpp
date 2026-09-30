@@ -18,6 +18,10 @@ namespace DRing = libjami;
 
 bool DaemonBridge::start()
 {
+    // A relay-only runtime can explicitly disable the optional direct engine.
+    // This is fail-closed: direct mode stays unavailable, not substituted by
+    // a public bootstrap/proxy. It also allows isolated Android relay tests.
+    if (qEnvironmentVariableIntValue("P2P_MESSENGER_DISABLE_DIRECT_ENGINE") == 1) return false;
 #ifdef P2P_MESSENGER_WITH_DAEMON
     if (started_)
         return true;
